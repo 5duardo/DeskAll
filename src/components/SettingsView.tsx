@@ -1,20 +1,25 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ArrowUpCircle,
   CheckCircle2,
+  Clock3,
   ExternalLink,
   Info,
   LoaderCircle,
   Monitor,
   Moon,
   RefreshCw,
+  RotateCcw,
   Sun,
 } from "lucide-react";
 import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { LazyStore } from "@tauri-apps/plugin-store";
-import type { ThemeMode } from "../types";
+import type { ShortcutItem, ThemeMode } from "../types";
+import { KIND_LABELS } from "../types";
 import { btnGhost, btnPrimary } from "../lib/ui";
+import { formatUsage } from "../lib/usage";
+import { FitIcon } from "./FitIcon";
 import {
   checkForUpdates,
   DEFAULT_GITHUB_REPO,
@@ -26,6 +31,8 @@ const store = new LazyStore("deskall.json");
 interface Props {
   theme: ThemeMode;
   onThemeChange: (mode: ThemeMode) => void;
+  items: ShortcutItem[];
+  onResetUsage: (id?: string) => void;
 }
 
 const OPTIONS: {
@@ -44,11 +51,34 @@ const OPTIONS: {
   },
 ];
 
-export function SettingsView({ theme, onThemeChange }: Props) {
+export function SettingsView({
+  theme,
+  onThemeChange,
+  items,
+  onResetUsage,
+}: Props) {
   const [version, setVersion] = useState("…");
   const [repo, setRepo] = useState(DEFAULT_GITHUB_REPO);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateCheckResult | null>(null);
+
+  const ranked = useMemo(
+    () =>
+      [...items]
+        .filter((i) => (i.usageMs ?? 0) > 0 || (i.launchCount ?? 0) > 0)
+        .sort(
+          (a, b) =>
+            (b.usageMs ?? 0) - (a.usageMs ?? 0) ||
+            (b.launchCount ?? 0) - (a.launchCount ?? 0),
+        )
+        .slice(0, 8),
+    [items],
+  );
+
+  const totalUsage = useMemo(
+    () => items.reduce((acc, i) => acc + (i.usageMs ?? 0), 0),
+    [items],
+  );
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
@@ -108,6 +138,76 @@ export function SettingsView({ theme, onThemeChange }: Props) {
             );
           })}
         </div>
+      </div>
+
+      <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="m-0 font-display text-lg tracking-tight">
+              Tiempo de uso
+            </h2>
+            <p className="mt-1 text-sm text-muted">
+              Se cuenta desde que abres un acceso hasta que vuelves a DeskAll ·{" "}
+              {formatUsage(totalUsage)} en total
+            </p>
+          </div>
+          <Clock3 className="size-5 shrink-0 text-accent" strokeWidth={1.8} />
+        </div>
+
+        {ranked.length === 0 ? (
+          <p className="mt-4 m-0 text-sm text-muted">
+            Aún no hay uso registrado. Abre apps o juegos desde DeskAll.
+          </p>
+        ) : (
+          <ul className="mt-4 m-0 flex list-none flex-col gap-2 p-0">
+            {ranked.map((item, idx) => (
+              <li
+                key={item.id}
+                className="flex items-center gap-3 rounded-xl border border-line bg-paper/50 px-3 py-2.5"
+              >
+                <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-xs font-semibold text-accent-deep">
+                  {idx + 1}
+                </span>
+                {item.iconDataUrl ? (
+                  <FitIcon src={item.iconDataUrl} className="size-8" size={64} />
+                ) : (
+                  <span
+                    className="size-8 rounded-lg"
+                    style={{ background: item.color }}
+                  />
+                )}
+                <div className="min-w-0 flex-1">
+                  <p className="m-0 truncate text-sm font-medium">{item.name}</p>
+                  <p className="m-0 text-xs text-muted">
+                    {KIND_LABELS[item.kind]} · {item.launchCount ?? 0} aperturas
+                  </p>
+                </div>
+                <span className="shrink-0 text-sm font-semibold tabular-nums">
+                  {formatUsage(item.usageMs ?? 0)}
+                </span>
+                <button
+                  type="button"
+                  className="grid size-8 cursor-pointer place-items-center rounded-lg border-0 bg-transparent text-muted hover:bg-accent-soft hover:text-ink"
+                  title="Reiniciar uso"
+                  onClick={() => onResetUsage(item.id)}
+                >
+                  <RotateCcw className="size-3.5" strokeWidth={1.8} />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+
+        {ranked.length > 0 && (
+          <button
+            type="button"
+            className={`${btnGhost} mt-4`}
+            onClick={() => onResetUsage()}
+          >
+            <RotateCcw className="size-4" strokeWidth={1.8} />
+            Reiniciar todo el uso
+          </button>
+        )}
       </div>
 
       <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
@@ -207,8 +307,8 @@ export function SettingsView({ theme, onThemeChange }: Props) {
           <div>
             <h2 className="m-0 font-display text-lg tracking-tight">Librería</h2>
             <p className="mt-1 text-sm leading-relaxed text-muted">
-              Al agregar un acceso, DeskAll guarda una copia en su librería
-              interna y deja de depender del Escritorio del sistema.
+              Al agregar apps, archivos o carpetas, DeskAll guarda una copia en
+              su librería interna y deja de depender del Escritorio.
             </p>
           </div>
         </div>

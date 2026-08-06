@@ -1,4 +1,4 @@
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, Channel } from "@tauri-apps/api/core";
 import type { ClipboardKind, PathInfo } from "../types";
 
 export async function getPathInfo(path: string): Promise<PathInfo> {
@@ -43,6 +43,40 @@ export async function moveDesktopToLibrary(path: string): Promise<string> {
 
 export async function getLibraryDir(): Promise<string> {
   return invoke<string>("get_library_dir");
+}
+
+export interface InstalledApp {
+  name: string;
+  path: string;
+}
+
+export type InstalledScanEvent =
+  | { type: "batch"; data: InstalledApp[] }
+  | { type: "done"; data: { total: number } };
+
+/** Programs detected from Start Menu / Applications. */
+export async function listInstalledApps(): Promise<InstalledApp[]> {
+  return invoke<InstalledApp[]>("list_installed_apps");
+}
+
+/**
+ * Stream installed apps in small batches.
+ * `onBatch` is called repeatedly; resolves when the scan finishes.
+ */
+export async function scanInstalledApps(
+  onBatch: (apps: InstalledApp[]) => void,
+): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const onEvent = new Channel<InstalledScanEvent>();
+    onEvent.onmessage = (msg) => {
+      if (msg.type === "batch") {
+        onBatch(msg.data);
+      } else if (msg.type === "done") {
+        resolve(msg.data.total);
+      }
+    };
+    void invoke("scan_installed_apps", { onEvent }).catch(reject);
+  });
 }
 
 export async function launchItem(target: string): Promise<void> {
@@ -106,6 +140,11 @@ export async function openClipboardLocation(opts: {
 
 export async function extractFileIcon(path: string): Promise<string | null> {
   return invoke<string | null>("extract_file_icon", { path });
+}
+
+/** All icon resources embedded in an exe/lnk/dll. */
+export async function listFileIcons(path: string): Promise<string[]> {
+  return invoke<string[]>("list_file_icons", { path });
 }
 
 export function createId(): string {

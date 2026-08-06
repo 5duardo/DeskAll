@@ -7,10 +7,16 @@ import {
 } from "lucide-react";
 import type { ItemKind, ShortcutItem } from "../types";
 import { KIND_LABELS } from "../types";
+import { formatUsage } from "../lib/usage";
+import { FitIcon } from "./FitIcon";
 
 interface Props {
   item: ShortcutItem;
   selected: boolean;
+  launching?: boolean;
+  active?: boolean;
+  /** Items inside a category folder */
+  childCount?: number;
   onOpen: () => void;
   onSelect: () => void;
   onContext: (e: React.MouseEvent) => void;
@@ -37,36 +43,68 @@ function KindGlyph({ kind }: { kind: ItemKind }) {
 export function ShortcutTile({
   item,
   selected,
+  launching,
+  active,
+  childCount = 0,
   onOpen,
   onSelect,
   onContext,
   onDragStart,
   onDrop,
 }: Props) {
+  const usage = item.usageMs ?? 0;
+  const isGroup = Boolean(item.isGroup);
+
   return (
     <button
       type="button"
       className={[
-        "flex cursor-pointer flex-col items-center gap-2 rounded-2xl border border-transparent px-2 pt-3 pb-2.5 text-inherit transition duration-150 hover:-translate-y-0.5 hover:bg-surface/60",
-        selected ? "border-accent/25 bg-surface/70 shadow-desk" : "",
+        "group relative flex cursor-pointer flex-col items-center gap-2 rounded-2xl border px-2 pt-3 pb-2.5 text-inherit transition duration-200",
+        "hover:-translate-y-0.5 hover:bg-surface/60",
+        selected
+          ? "tile-selected border-transparent bg-surface/80"
+          : "border-transparent",
+        launching ? "tile-launching pointer-events-none" : "",
       ].join(" ")}
-      draggable
+      draggable={!isGroup}
       onDragStart={onDragStart}
       onDragOver={(e) => e.preventDefault()}
       onDrop={onDrop}
       onClick={onSelect}
-      onDoubleClick={onOpen}
+      onDoubleClick={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onOpen();
+      }}
       onContextMenu={onContext}
-      title={`${item.name}\n${item.path}`}
+      aria-pressed={selected}
+      title={
+        isGroup
+          ? `${item.name}\nClic: abrir carpeta`
+          : `${item.name}\nClic: detalles · Doble clic: abrir`
+      }
     >
-      <span className="relative grid size-16 place-items-center">
+      {selected && (
+        <span
+          className="absolute top-2 right-2 size-2 rounded-full bg-ink dark:bg-paper"
+          aria-hidden
+        />
+      )}
+      {active && (
+        <span
+          className="absolute top-1.5 left-1.5 size-2.5 rounded-full border border-paper bg-[#22c55e] shadow-[0_0_0_2px_rgba(34,197,94,0.25)]"
+          title="En uso"
+          aria-label="En uso"
+        />
+      )}
+      <span
+        className={[
+          "relative grid size-16 place-items-center transition duration-200",
+          selected ? "scale-105" : "group-hover:scale-[1.03]",
+        ].join(" ")}
+      >
         {item.iconDataUrl ? (
-          <img
-            src={item.iconDataUrl}
-            alt=""
-            className="size-16 object-contain drop-shadow-md [image-rendering:auto]"
-            draggable={false}
-          />
+          <FitIcon src={item.iconDataUrl} className="size-16" />
         ) : (
           <span
             className="grid size-14 place-items-center rounded-2xl text-white"
@@ -77,10 +115,19 @@ export function ShortcutTile({
         )}
       </span>
       <span className="flex w-full flex-col gap-0.5 text-center">
-        <span className="line-clamp-2 text-sm leading-snug font-semibold">
+        <span
+          className={[
+            "line-clamp-2 text-sm leading-snug font-semibold",
+            selected ? "text-ink" : "",
+          ].join(" ")}
+        >
           {item.name}
         </span>
-        <span className="text-xs text-muted">{KIND_LABELS[item.kind]}</span>
+        <span className="text-xs text-muted">
+          {isGroup
+            ? `Carpeta · ${childCount}`
+            : `${KIND_LABELS[item.kind]}${usage > 0 ? ` · ${formatUsage(usage)}` : ""}`}
+        </span>
       </span>
     </button>
   );

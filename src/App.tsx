@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import {
   Clipboard,
   LayoutGrid,
-  MonitorSmartphone,
   Settings,
 } from "lucide-react";
 import type { ViewMode } from "./types";
@@ -13,6 +12,9 @@ import { DesktopView } from "./components/DesktopView";
 import { ClipboardView } from "./components/ClipboardView";
 import { SettingsView } from "./components/SettingsView";
 import { BootLoader } from "./components/BootLoader";
+import { AppLogo } from "./components/AppLogo";
+import { WindowControls } from "./components/WindowControls";
+import { CopyLoader } from "./components/CopyLoader";
 
 const MIN_BOOT_MS = 700;
 
@@ -32,11 +34,17 @@ function App() {
   }, [dataReady]);
 
   if (!bootDone) {
-    return <BootLoader />;
+    return (
+      <>
+        <BootLoader />
+        {shortcuts.copying && <CopyLoader label={shortcuts.copying} />}
+      </>
+    );
   }
 
   return (
-    <div className="relative isolate grid h-full animate-rise grid-cols-1 grid-rows-[auto_1fr] md:grid-cols-[240px_1fr] md:grid-rows-none">
+    <div className="relative isolate grid h-full animate-rise grid-cols-1 grid-rows-[auto_auto_1fr] md:grid-cols-[240px_1fr] md:grid-rows-[auto_1fr]">
+      {shortcuts.copying && <CopyLoader label={shortcuts.copying} />}
       <div
         className="pointer-events-none absolute top-[8%] left-[28%] z-0 size-[280px] animate-drift rounded-full bg-glow-a opacity-45 blur-[40px]"
         aria-hidden
@@ -46,14 +54,26 @@ function App() {
         aria-hidden
       />
 
-      <aside className="relative z-1 flex flex-col gap-6 border-b border-line bg-surface/80 px-4 pt-5 pb-3 backdrop-blur-xl md:border-r md:border-b-0 md:pb-4">
-        <div className="flex items-center gap-3.5 px-2 py-1.5" data-tauri-drag-region>
+      {/* Frameless title strip */}
+      <header className="relative z-20 col-span-full flex h-9 items-center border-b border-line bg-surface/90 backdrop-blur-xl md:col-span-2">
+        <div
+          className="flex min-w-0 flex-1 items-center gap-2 px-3"
+          data-tauri-drag-region
+        >
+          <AppLogo size="sm" className="pointer-events-none" />
           <span
-            className="grid size-9 shrink-0 place-items-center rounded-xl bg-linear-to-br from-zinc-500 via-zinc-700 to-zinc-900 text-white shadow-[inset_0_0_0_1px_rgba(255,255,255,0.25)]"
-            aria-hidden
+            className="truncate text-xs font-medium text-muted"
+            data-tauri-drag-region
           >
-            <MonitorSmartphone className="size-5" strokeWidth={1.8} />
+            DeskAll
           </span>
+        </div>
+        <WindowControls />
+      </header>
+
+      <aside className="relative z-1 flex flex-col gap-6 border-b border-line bg-surface/80 px-4 pt-4 pb-3 backdrop-blur-xl md:border-r md:border-b-0 md:pb-4">
+        <div className="flex items-center gap-3.5 px-2 py-1.5" data-tauri-drag-region>
+          <AppLogo size="md" />
           <div>
             <p className="font-display text-[1.35rem] leading-tight font-bold tracking-tight">
               DeskAll
@@ -99,12 +119,18 @@ function App() {
         {view === "desktop" ? (
           <DesktopView
             items={shortcuts.items}
+            activeUsageId={shortcuts.activeUsageId}
+            activeSegmentStart={shortcuts.activeSegmentStart}
             onAddPath={shortcuts.addFromPath}
             onAddUrl={shortcuts.addUrl}
+            onAddGroup={shortcuts.addGroup}
+            onMoveToFolder={shortcuts.moveToFolder}
             onRename={shortcuts.rename}
+            onSetIcon={shortcuts.setIcon}
             onSetKind={shortcuts.setKind}
             onRemove={shortcuts.remove}
             onReorder={shortcuts.reorder}
+            onUsageStart={shortcuts.startUsageSession}
           />
         ) : view === "clipboard" ? (
           <ClipboardView
@@ -117,7 +143,12 @@ function App() {
             onClear={clipboard.clearUnpinned}
           />
         ) : (
-          <SettingsView theme={theme} onThemeChange={(m) => void setTheme(m)} />
+          <SettingsView
+            theme={theme}
+            onThemeChange={(m) => void setTheme(m)}
+            items={shortcuts.items}
+            onResetUsage={(id) => void shortcuts.resetUsage(id)}
+          />
         )}
       </main>
     </div>
@@ -141,17 +172,33 @@ function NavButton({
     <button
       type="button"
       onClick={onClick}
+      aria-current={active ? "page" : undefined}
       className={[
-        "flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-left text-ink-soft transition duration-150 hover:translate-x-0.5 hover:bg-surface",
-        active ? "bg-surface text-ink shadow-desk" : "",
+        "relative flex w-full cursor-pointer items-center gap-2.5 rounded-xl px-3 py-2.5 text-left transition duration-200",
+        active
+          ? "bg-ink text-paper shadow-desk"
+          : "text-ink-soft hover:translate-x-0.5 hover:bg-surface",
       ].join(" ")}
     >
+      {active && (
+        <span
+          className="absolute top-1/2 left-0 h-5 w-1 -translate-y-1/2 rounded-full bg-paper/80"
+          aria-hidden
+        />
+      )}
       <span className="grid size-5 place-items-center" aria-hidden>
         {icon}
       </span>
-      {children}
+      <span className={active ? "font-semibold" : ""}>{children}</span>
       {typeof count === "number" && (
-        <span className="ml-auto min-w-6 rounded-full bg-accent-soft px-1.5 py-0.5 text-center text-xs text-accent-deep">
+        <span
+          className={[
+            "ml-auto min-w-6 rounded-full px-1.5 py-0.5 text-center text-xs",
+            active
+              ? "bg-paper/20 text-paper"
+              : "bg-accent-soft text-accent-deep",
+          ].join(" ")}
+        >
           {count}
         </span>
       )}

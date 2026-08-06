@@ -11,6 +11,19 @@ export interface ShortcutItem {
   onDesktop?: boolean;
   /** Extracted system icon as PNG data URL */
   iconDataUrl?: string | null;
+  /** Total tracked usage time in milliseconds */
+  usageMs?: number;
+  /** How many times it was launched from DeskAll */
+  launchCount?: number;
+  /** Last launch timestamp */
+  lastUsedAt?: number;
+  /**
+   * DeskAll category folder (not an OS path).
+   * Children point here via parentId.
+   */
+  isGroup?: boolean;
+  /** Parent category folder id; null/undefined = desktop root */
+  parentId?: string | null;
 }
 
 export type ClipboardKind = "text" | "image";

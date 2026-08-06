@@ -1,4 +1,5 @@
 mod icons;
+mod installed;
 
 use serde::Serialize;
 use std::fs;
@@ -130,6 +131,11 @@ fn extract_file_icon(path: String) -> Option<String> {
 }
 
 #[tauri::command]
+fn list_file_icons(path: String) -> Vec<String> {
+    icons::list_icon_data_urls(&path)
+}
+
+#[tauri::command]
 fn get_desktop_dir() -> Result<String, String> {
     desktop_dir().map(|p| p.to_string_lossy().into_owned())
 }
@@ -165,79 +171,125 @@ fn library_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir)
 }
 
-/// Copies a file/shortcut into DeskAll's library folder. Folders are refused.
-/// If the path is already inside the library, returns it unchanged.
-#[tauri::command]
-fn copy_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    let src = Path::new(&path);
-    if !src.exists() {
-        return Err("El archivo no existe".into());
+fn unique_library_dest(dir: &Path, src: &Path) -> PathBuf {
+    let file_name = src
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("item");
+    let dest = dir.join(file_name);
+    if !dest.exists() {
+        return dest;
     }
-    if src.is_dir() {
-        return Err("Las carpetas no se copian; solo se guarda la referencia".into());
-    }
-    let dir = library_dir(&app)?;
+    let stem = src
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("item");
+    let ext = src
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| format!(".{e}"))
+        .unwrap_or_default();
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    dir.join(format!("{stem}-{stamp}{ext}"))
+}
 
-    // Already in library — keep pointing here
+fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
+    fs::create_dir_all(dest).map_err(|e| format!("No se pudo crear carpeta: {e}"))?;
+    let entries = fs::read_dir(src).map_err(|e| format!("No se pudo leer carpeta: {e}"))?;
+    for entry in entries {
+        let Ok(entry) = entry else { continue };
+        let from = entry.path();
+        let to = dest.join(entry.file_name());
+
+        // Skip symlinks / junctions to avoid loops and crashes
+        let meta = match fs::symlink_metadata(&from) {
+            Ok(m) => m,
+            Err(_) => continue,
+        };
+        if meta.file_type().is_symlink() {
+            continue;
+        }
+
+        if meta.is_dir() {
+            // Don't copy destination into itself
+            if let (Ok(a), Ok(b)) = (from.canonicalize(), dest.canonicalize()) {
+                if b.starts_with(&a) {
+                    continue;
+                }
+            }
+            copy_dir_recursive(&from, &to)?;
+        } else if meta.is_file() {
+            // Skip locked/unreadable files instead of aborting the whole folder
+            let _ = fs::copy(&from, &to);
+        }
+    }
+    Ok(())
+}
+
+fn copy_path_to_library(app: &tauri::AppHandle, path: &str) -> Result<String, String> {
+    let src = Path::new(path);
+    if !src.exists() {
+        return Err("La ruta no existe".into());
+    }
+    let dir = library_dir(app)?;
+
     let src_canon = src.canonicalize().unwrap_or_else(|_| src.to_path_buf());
     let dir_canon = dir.canonicalize().unwrap_or_else(|_| dir.clone());
     if src_canon.starts_with(&dir_canon) {
         return Ok(src_canon.to_string_lossy().into_owned());
     }
 
-    let file_name = src
-        .file_name()
-        .and_then(|n| n.to_str())
-        .ok_or_else(|| "Nombre de archivo inválido".to_string())?;
-
-    let mut dest = dir.join(file_name);
-    if dest.exists() {
-        // Same name already in library: reuse if identical size, else unique name
-        let reuse = fs::metadata(src).ok().and_then(|sm| {
-            fs::metadata(&dest).ok().and_then(|dm| {
-                if sm.len() == dm.len() {
-                    Some(dest.clone())
-                } else {
-                    None
-                }
-            })
-        });
-        if let Some(existing) = reuse {
-            return Ok(existing.to_string_lossy().into_owned());
-        }
-        let stem = src
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("item");
-        let ext = src
-            .extension()
-            .and_then(|e| e.to_str())
-            .map(|e| format!(".{e}"))
-            .unwrap_or_default();
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
-        dest = dir.join(format!("{stem}-{stamp}{ext}"));
+    // Refuse copying the library root or a parent of it
+    if dir_canon.starts_with(&src_canon) {
+        return Err("No se puede copiar una carpeta que contiene la librería".into());
     }
 
-    fs::copy(src, &dest).map_err(|e| format!("No se pudo copiar a library: {e}"))?;
+    let dest = unique_library_dest(&dir, src);
+
+    if src.is_dir() {
+        copy_dir_recursive(src, &dest)?;
+    } else {
+        fs::copy(src, &dest).map_err(|e| format!("No se pudo copiar a library: {e}"))?;
+    }
+
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// Ensure path lives in library (copy if needed), then delete Desktop original if requested.
+/// Copies a file, shortcut or folder into DeskAll's library.
+/// Runs off the UI thread to avoid freezing / crashing on large folders.
 #[tauri::command]
-fn import_to_library(
+async fn copy_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || copy_path_to_library(&app, &path))
+        .await
+        .map_err(|e| format!("Copia interrumpida: {e}"))?
+}
+
+/// Ensure path lives in library (copy if needed), then delete Desktop original if requested.
+/// Desktop folders are never deleted automatically (only files/shortcuts).
+#[tauri::command]
+async fn import_to_library(
     app: tauri::AppHandle,
     path: String,
     delete_desktop_original: bool,
 ) -> Result<String, String> {
-    let src = Path::new(&path);
-    let on_desk = path_is_on_desktop(src);
-    let library_path = copy_to_library(app, path.clone())?;
-    if delete_desktop_original && on_desk {
-        // Only delete the ORIGINAL desktop path, never the library copy
+    let src_path = path.clone();
+    let on_desk = path_is_on_desktop(Path::new(&path));
+    let is_dir = Path::new(&path).is_dir();
+
+    let library_path = {
+        let app2 = app.clone();
+        let path2 = path.clone();
+        tauri::async_runtime::spawn_blocking(move || copy_path_to_library(&app2, &path2))
+            .await
+            .map_err(|e| format!("Copia interrumpida: {e}"))??
+    };
+
+    if delete_desktop_original && on_desk && !is_dir {
         let lib = Path::new(&library_path);
+        let src = Path::new(&src_path);
         let same = lib
             .canonicalize()
             .ok()
@@ -245,18 +297,18 @@ fn import_to_library(
             .map(|(a, b)| a == b)
             .unwrap_or(false);
         if !same {
-            let _ = delete_desktop_item(path);
+            let _ = delete_desktop_item(src_path);
         }
     }
     Ok(library_path)
 }
 
 #[tauri::command]
-fn move_desktop_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
+async fn move_desktop_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
     if !path_is_on_desktop(Path::new(&path)) {
         return Err("Solo se puede mover desde el Escritorio del sistema".into());
     }
-    import_to_library(app, path, true)
+    import_to_library(app, path, true).await
 }
 
 #[tauri::command]
@@ -455,6 +507,31 @@ fn reveal_item(path: String) -> Result<(), String> {
     }
 }
 
+#[tauri::command]
+async fn list_installed_apps() -> Result<Vec<installed::InstalledApp>, String> {
+    tauri::async_runtime::spawn_blocking(installed::list_installed_apps)
+        .await
+        .map_err(|e| format!("Escaneo interrumpido: {e}"))
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "type", content = "data")]
+enum InstalledScanEvent {
+    Batch(Vec<installed::InstalledApp>),
+    Done { total: usize },
+}
+
+/// Streams installed apps in small batches so the UI can render progressively.
+#[tauri::command]
+fn scan_installed_apps(on_event: tauri::ipc::Channel<InstalledScanEvent>) {
+    std::thread::spawn(move || {
+        let total = installed::scan_installed_apps_batched(|batch| {
+            let _ = on_event.send(InstalledScanEvent::Batch(batch));
+        });
+        let _ = on_event.send(InstalledScanEvent::Done { total });
+    });
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -466,6 +543,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_path_info,
             extract_file_icon,
+            list_file_icons,
             get_desktop_dir,
             is_on_desktop,
             delete_desktop_item,
@@ -473,6 +551,8 @@ pub fn run() {
             move_desktop_to_library,
             import_to_library,
             get_library_dir,
+            list_installed_apps,
+            scan_installed_apps,
             launch_item,
             reveal_item,
             get_clipboard_store_path,
