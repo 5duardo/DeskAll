@@ -15,9 +15,10 @@ import {
   Pencil,
   Plus,
   Search,
+  Star,
   X,
 } from "./icons";
-import type { ItemKind, ShortcutItem } from "../types";
+import type { DeskTabId, ItemKind, ShortcutItem } from "../types";
 import { KIND_LABELS } from "../types";
 import {
   getPathInfo,
@@ -36,7 +37,13 @@ import { FitIcon } from "./FitIcon";
 import { EditShortcutModal } from "./EditShortcutModal";
 import { FilesExplorer } from "./FilesExplorer";
 
-type DeskTab = "apps" | "games" | "files";
+type DeskTab = DeskTabId;
+
+const MOVE_DRAG_THRESHOLD = 7;
+
+function folderTabOf(item: ShortcutItem): DeskTabId {
+  return item.groupTab ?? "apps";
+}
 
 /** Kind assigned when dropping/adding into the current desktop tab. */
 function kindForDeskTab(
@@ -67,7 +74,11 @@ interface Props {
     name?: string,
     parentId?: string | null,
   ) => Promise<unknown>;
-  onAddGroup: (name: string, parentId?: string | null) => Promise<unknown>;
+  onAddGroup: (
+    name: string,
+    parentId?: string | null,
+    groupTab?: DeskTabId,
+  ) => Promise<unknown>;
   onMoveToFolder: (id: string, parentId: string | null) => Promise<void>;
   onRename: (id: string, name: string) => Promise<void>;
   onSetIcon: (
@@ -76,6 +87,7 @@ interface Props {
     options?: boolean | { custom?: boolean; avatar?: boolean },
   ) => Promise<void>;
   onSetKind: (id: string, kind: ItemKind) => Promise<void>;
+  onSetFavorite: (id: string, favorite: boolean) => Promise<void>;
   onRemove: (id: string) => Promise<void>;
   onReorder: (fromId: string, toId: string) => Promise<void>;
   onUsageStart: (id: string) => void;
@@ -100,11 +112,12 @@ function Section({
   launchingId,
   runningIds,
   childCountOf,
+  dropTargetId,
+  draggingId,
   onSelect,
   onOpen,
   onContext,
-  dragId,
-  onDropItem,
+  onMovePointerDown,
 }: {
   title: string;
   icon: React.ReactNode;
@@ -113,11 +126,12 @@ function Section({
   launchingId: string | null;
   runningIds: Set<string>;
   childCountOf: (id: string) => number;
+  dropTargetId: string | null;
+  draggingId: string | null;
   onSelect: (id: string) => void;
   onOpen: (item: ShortcutItem) => void;
   onContext: (item: ShortcutItem, e: React.MouseEvent) => void;
-  dragId: React.MutableRefObject<string | null>;
-  onDropItem: (fromId: string, toItem: ShortcutItem) => void;
+  onMovePointerDown: (e: React.PointerEvent, id: string) => void;
 }) {
   if (!items.length) return null;
   return (
@@ -143,18 +157,12 @@ function Section({
             launching={item.id === launchingId}
             active={runningIds.has(item.id)}
             childCount={childCountOf(item.id)}
+            dropTarget={dropTargetId === item.id}
+            dragging={draggingId === item.id}
             onSelect={() => onSelect(item.id)}
             onOpen={() => onOpen(item)}
             onContext={(e) => onContext(item, e)}
-            onDragStart={() => {
-              dragId.current = item.id;
-            }}
-            onDrop={() => {
-              if (dragId.current && dragId.current !== item.id) {
-                onDropItem(dragId.current, item);
-              }
-              dragId.current = null;
-            }}
+            onMovePointerDown={onMovePointerDown}
           />
         ))}
       </div>
@@ -174,6 +182,7 @@ export function DesktopView({
   onRename,
   onSetIcon,
   onSetKind,
+  onSetFavorite,
   onRemove,
   onReorder,
   onUsageStart,
@@ -189,6 +198,14 @@ export function DesktopView({
   const [draftKind, setDraftKind] = useState<ItemKind>("app");
   const [busy, setBusy] = useState(false);
   const [dropping, setDropping] = useState(false);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const [dropTargetId, setDropTargetId] = useState<string | null>(null);
+  const [rootDropActive, setRootDropActive] = useState(false);
+  const [dragGhost, setDragGhost] = useState<{
+    name: string;
+    x: number;
+    y: number;
+  } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [launchingId, setLaunchingId] = useState<string | null>(null);
   const [installed, setInstalled] = useState<InstalledApp[]>([]);
@@ -197,9 +214,17 @@ export function DesktopView({
   const [installedScanning, setInstalledScanning] = useState(false);
   const [pickedPaths, setPickedPaths] = useState<Set<string>>(() => new Set());
   const scanGen = useRef(0);
-  const dragId = useRef<string | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const clickTimer = useRef<number | null>(null);
+  const pendingMove = useRef<{
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
+  const moveActive = useRef(false);
+  const suppressClick = useRef(false);
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
   const runningIds = useMemo(
     () => new Set(runningIdsProp),
     [runningIdsProp],
@@ -209,18 +234,19 @@ export function DesktopView({
     ? (items.find((i) => i.id === folderId && i.isGroup) ?? null)
     : null;
 
-  // If folder was deleted, go back to root
+  // Leave folder when deleted or when switching to another tab
   useEffect(() => {
-    if (folderId && !items.some((i) => i.id === folderId && i.isGroup)) {
+    if (!folderId) return;
+    const folder = items.find((i) => i.id === folderId && i.isGroup);
+    if (!folder || folderTabOf(folder) !== deskTab) {
       setFolderId(null);
     }
-  }, [folderId, items]);
+  }, [folderId, items, deskTab]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const atLevel = items.filter((i) => (i.parentId ?? null) === folderId);
     if (!q) return atLevel;
-    // Search within current folder; at root also match nested names lightly
     return atLevel.filter(
       (i) =>
         i.name.toLowerCase().includes(q) ||
@@ -229,9 +255,13 @@ export function DesktopView({
     );
   }, [items, query, folderId]);
 
+  /** Folders only for the active tab (never shared across tabs). */
   const groups = useMemo(
-    () => filtered.filter((i) => i.isGroup),
-    [filtered],
+    () =>
+      filtered.filter(
+        (i) => i.isGroup && folderTabOf(i) === deskTab && deskTab !== "games",
+      ),
+    [filtered, deskTab],
   );
   const apps = useMemo(
     () => filtered.filter((i) => !i.isGroup && i.kind === "app"),
@@ -240,6 +270,14 @@ export function DesktopView({
   const games = useMemo(
     () => filtered.filter((i) => !i.isGroup && i.kind === "game"),
     [filtered],
+  );
+  const favoriteGames = useMemo(
+    () => games.filter((i) => i.favorite),
+    [games],
+  );
+  const otherGames = useMemo(
+    () => games.filter((i) => !i.favorite),
+    [games],
   );
   const others = useMemo(
     () =>
@@ -250,8 +288,11 @@ export function DesktopView({
   );
 
   const allGroups = useMemo(
-    () => items.filter((i) => i.isGroup),
-    [items],
+    () =>
+      items.filter(
+        (i) => i.isGroup && folderTabOf(i) === deskTab && deskTab !== "games",
+      ),
+    [items, deskTab],
   );
 
   const childCountOf = useMemo(() => {
@@ -508,7 +549,7 @@ export function DesktopView({
   async function submitFolder(e: React.FormEvent) {
     e.preventDefault();
     const name = draftName.trim() || "Nueva carpeta";
-    await onAddGroup(name, folderId);
+    await onAddGroup(name, folderId, deskTab === "games" ? "apps" : deskTab);
     setDraftName("");
     setModal(null);
     flash(`Carpeta «${name}» creada`);
@@ -519,15 +560,187 @@ export function DesktopView({
     setModal("rename");
   }
 
-  function handleDropItem(fromId: string, toItem: ShortcutItem) {
-    if (toItem.isGroup) {
-      void onMoveToFolder(fromId, toItem.id).then(() =>
-        flash(`Movido a «${toItem.name}»`),
-      );
-      return;
-    }
-    void onReorder(fromId, toItem.id);
+  function clearMoveDrag() {
+    pendingMove.current = null;
+    moveActive.current = false;
+    document.body.style.cursor = "";
+    document.body.style.userSelect = "";
+    setDraggingId(null);
+    setDropTargetId(null);
+    setRootDropActive(false);
+    setDragGhost(null);
   }
+
+  function hitDropTarget(clientX: number, clientY: number): {
+    kind: "folder" | "item" | "root";
+    id: string | null;
+  } | null {
+    const el = document.elementFromPoint(clientX, clientY);
+    if (!el || !(el instanceof Element)) return null;
+    const root = el.closest("[data-deskall-drop='root']");
+    if (root) return { kind: "root", id: null };
+    const node = el.closest("[data-deskall-id]");
+    if (!node) return null;
+    const id = node.getAttribute("data-deskall-id");
+    const drop = node.getAttribute("data-deskall-drop");
+    if (!id) return null;
+    if (drop === "folder") return { kind: "folder", id };
+    return { kind: "item", id };
+  }
+
+  function onMovePointerDown(e: React.PointerEvent, id: string) {
+    if (e.button !== 0) return;
+    pendingMove.current = { id, x: e.clientX, y: e.clientY };
+    moveActive.current = false;
+  }
+
+  useEffect(() => {
+    let frame = 0;
+    let latestPointer: PointerEvent | null = null;
+
+    function processPointerMove(e: PointerEvent) {
+      const pending = pendingMove.current;
+      if (!pending) return;
+
+      const dx = e.clientX - pending.x;
+      const dy = e.clientY - pending.y;
+      if (!moveActive.current) {
+        if (Math.hypot(dx, dy) < MOVE_DRAG_THRESHOLD) return;
+        moveActive.current = true;
+        suppressClick.current = true;
+        document.body.style.cursor = "grabbing";
+        document.body.style.userSelect = "none";
+        if (clickTimer.current) {
+          window.clearTimeout(clickTimer.current);
+          clickTimer.current = null;
+        }
+        setDraggingId(pending.id);
+        const item = itemsRef.current.find((i) => i.id === pending.id);
+        setDragGhost({
+          name: item?.name ?? "App",
+          x: e.clientX,
+          y: e.clientY,
+        });
+      } else {
+        setDragGhost((g) =>
+          g ? { ...g, x: e.clientX, y: e.clientY } : g,
+        );
+      }
+
+      const hit = hitDropTarget(e.clientX, e.clientY);
+      if (!hit || hit.id === pending.id) {
+        setDropTargetId(null);
+        setRootDropActive(false);
+        return;
+      }
+      if (hit.kind === "root") {
+        setDropTargetId(null);
+        setRootDropActive(true);
+        return;
+      }
+      setRootDropActive(false);
+      setDropTargetId(hit.id);
+    }
+
+    function onPointerMove(e: PointerEvent) {
+      latestPointer = e;
+      if (frame) return;
+      frame = window.requestAnimationFrame(() => {
+        frame = 0;
+        const pointer = latestPointer;
+        latestPointer = null;
+        if (pointer) processPointerMove(pointer);
+      });
+    }
+
+    function onPointerUp(e: PointerEvent) {
+      if (frame) {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+        latestPointer = null;
+      }
+      const pending = pendingMove.current;
+      if (!pending) return;
+
+      const wasDragging = moveActive.current;
+      const fromId = pending.id;
+      pendingMove.current = null;
+      moveActive.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setDragGhost(null);
+      setDraggingId(null);
+
+      if (!wasDragging) {
+        setDropTargetId(null);
+        setRootDropActive(false);
+        return;
+      }
+
+      const hit = hitDropTarget(e.clientX, e.clientY);
+      setDropTargetId(null);
+      setRootDropActive(false);
+
+      if (!hit || (hit.id && hit.id === fromId)) {
+        window.setTimeout(() => {
+          suppressClick.current = false;
+        }, 0);
+        return;
+      }
+
+      const source = itemsRef.current.find((i) => i.id === fromId);
+      if (!source || source.isGroup) {
+        suppressClick.current = false;
+        return;
+      }
+
+      if (hit.kind === "root") {
+        if ((source.parentId ?? null) !== null) {
+          void onMoveToFolder(fromId, null).then(() =>
+            flash("Movido al escritorio"),
+          );
+        }
+      } else if (hit.kind === "folder" && hit.id) {
+        const folder = itemsRef.current.find((i) => i.id === hit.id);
+        if (!folder?.isGroup || folderTabOf(folder) === "games") {
+          suppressClick.current = false;
+          return;
+        }
+        // Only drop into folders of the matching tab / apps folders for apps
+        void onMoveToFolder(fromId, hit.id).then(() => {
+          flash(`Movido a «${folder.name}»`);
+        });
+      } else if (hit.kind === "item" && hit.id) {
+        const target = itemsRef.current.find((i) => i.id === hit.id);
+        if (target?.isGroup) {
+          void onMoveToFolder(fromId, target.id).then(() =>
+            flash(`Movido a «${target.name}»`),
+          );
+        } else if (target) {
+          void onReorder(fromId, target.id);
+        }
+      }
+
+      window.setTimeout(() => {
+        suppressClick.current = false;
+      }, 0);
+    }
+
+    function onPointerCancel() {
+      clearMoveDrag();
+      suppressClick.current = false;
+    }
+
+    window.addEventListener("pointermove", onPointerMove);
+    window.addEventListener("pointerup", onPointerUp);
+    window.addEventListener("pointercancel", onPointerCancel);
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      window.removeEventListener("pointermove", onPointerMove);
+      window.removeEventListener("pointerup", onPointerUp);
+      window.removeEventListener("pointercancel", onPointerCancel);
+    };
+  }, [onMoveToFolder, onReorder]);
 
   async function openSelected(item = selected) {
     if (!item || launchingId) return;
@@ -553,6 +766,7 @@ export function DesktopView({
   }
 
   function handleTileClick(id: string) {
+    if (suppressClick.current || moveActive.current) return;
     const item = items.find((i) => i.id === id);
     // Category folders open on single click — no preview modal
     if (item?.isGroup) {
@@ -652,11 +866,17 @@ export function DesktopView({
               <div className="flex items-center gap-1.5 px-0.5">
                 <button
                   type="button"
-                  className="inline-flex cursor-pointer items-center gap-1 rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-ink-soft"
+                  data-deskall-drop="root"
+                  className={[
+                    "inline-flex cursor-pointer items-center gap-1 rounded-full border px-2.5 py-1 text-xs transition",
+                    rootDropActive
+                      ? "border-accent bg-accent-soft text-accent-deep ring-2 ring-accent/25"
+                      : "border-line bg-surface text-ink-soft",
+                  ].join(" ")}
                   onClick={() => setFolderId(null)}
                 >
                   <ChevronLeft className="size-3.5" strokeWidth={1.8} />
-                  Escritorio
+                  {rootDropActive ? "Soltar en escritorio" : "Escritorio"}
                 </button>
                 <span className="text-xs text-muted">/</span>
                 <span className="truncate text-xs font-medium text-ink">
@@ -685,14 +905,6 @@ export function DesktopView({
             <button type="button" className={btnGhost} onClick={openAddModal}>
               <Plus className="size-4" strokeWidth={1.8} />
               Añadir
-            </button>
-            <button
-              type="button"
-              className={btnPrimary}
-              onClick={() => openSelected()}
-              disabled={!selected}
-            >
-              Abrir
             </button>
           </div>
         </div>
@@ -820,35 +1032,84 @@ export function DesktopView({
         </div>
       ) : deskTab === "games" && !currentFolder ? (
         <div
-          className={`flex-1 overflow-auto px-1 pb-4 ${hideScrollbar}`}
+          className={`flex flex-1 flex-col gap-7 overflow-auto px-1 pb-4 ${hideScrollbar}`}
         >
-          <div
-            className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(200px,1fr))] content-start gap-3.5 sm:grid-cols-[repeat(auto-fill,minmax(220px,1fr))]"
-            role="list"
-          >
-            {games.map((item) => (
-              <GameBanner
-                key={item.id}
-                item={item}
-                selected={item.id === selectedId}
-                launching={item.id === launchingId}
-                active={runningIds.has(item.id)}
-                onSelect={() => handleTileClick(item.id)}
-                onOpen={() => handleTileOpen(item)}
-                onContext={(e) => openContext(item, e)}
-                onDragStart={() => {
-                  dragId.current = item.id;
-                }}
-                onDrop={() => {
-                  if (dragId.current && dragId.current !== item.id) {
-                    const target = games.find((g) => g.id === item.id);
-                    if (target) handleDropItem(dragId.current, target);
-                  }
-                  dragId.current = null;
-                }}
-              />
-            ))}
-          </div>
+          {favoriteGames.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <header className="flex items-center gap-2 px-0.5">
+                <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-accent-deep">
+                  <Star className="size-4" strokeWidth={1.8} />
+                </span>
+                <h2 className="m-0 font-display text-lg tracking-tight">
+                  Favoritos
+                </h2>
+                <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent-deep">
+                  {favoriteGames.length}
+                </span>
+              </header>
+              <div
+                className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(200px,1fr))] content-start gap-3.5 sm:grid-cols-[repeat(auto-fill,minmax(220px,1fr))]"
+                role="list"
+              >
+                {favoriteGames.map((item) => (
+                  <GameBanner
+                    key={item.id}
+                    item={item}
+                    selected={item.id === selectedId}
+                    launching={item.id === launchingId}
+                    active={runningIds.has(item.id)}
+                    dropTarget={dropTargetId === item.id}
+                    dragging={draggingId === item.id}
+                    onSelect={() => handleTileClick(item.id)}
+                    onOpen={() => handleTileOpen(item)}
+                    onContext={(e) => openContext(item, e)}
+                    onMovePointerDown={onMovePointerDown}
+                    onToggleFavorite={() =>
+                      void onSetFavorite(item.id, !item.favorite)
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+          )}
+          {otherGames.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <header className="flex items-center gap-2 px-0.5">
+                <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-accent-deep">
+                  <Gamepad2 className="size-4" strokeWidth={1.8} />
+                </span>
+                <h2 className="m-0 font-display text-lg tracking-tight">
+                  {favoriteGames.length > 0 ? "Todos" : "Juegos"}
+                </h2>
+                <span className="rounded-full bg-accent-soft px-2 py-0.5 text-xs text-accent-deep">
+                  {otherGames.length}
+                </span>
+              </header>
+              <div
+                className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(200px,1fr))] content-start gap-3.5 sm:grid-cols-[repeat(auto-fill,minmax(220px,1fr))]"
+                role="list"
+              >
+                {otherGames.map((item) => (
+                  <GameBanner
+                    key={item.id}
+                    item={item}
+                    selected={item.id === selectedId}
+                    launching={item.id === launchingId}
+                    active={runningIds.has(item.id)}
+                    dropTarget={dropTargetId === item.id}
+                    dragging={draggingId === item.id}
+                    onSelect={() => handleTileClick(item.id)}
+                    onOpen={() => handleTileOpen(item)}
+                    onContext={(e) => openContext(item, e)}
+                    onMovePointerDown={onMovePointerDown}
+                    onToggleFavorite={() =>
+                      void onSetFavorite(item.id, !item.favorite)
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+          )}
         </div>
       ) : (
         <div className={`flex flex-1 flex-col gap-7 overflow-auto px-2 pb-4 ${hideScrollbar}`}>
@@ -868,11 +1129,12 @@ export function DesktopView({
                   launchingId={launchingId}
                   runningIds={runningIds}
                   childCountOf={childCountOf}
+                  dropTargetId={dropTargetId}
+                  draggingId={draggingId}
                   onSelect={handleTileClick}
                   onOpen={handleTileOpen}
                   onContext={openContext}
-                  dragId={dragId}
-                  onDropItem={handleDropItem}
+                  onMovePointerDown={onMovePointerDown}
                 />
               )}
               <Section
@@ -887,16 +1149,28 @@ export function DesktopView({
                 launchingId={launchingId}
                 runningIds={runningIds}
                 childCountOf={childCountOf}
+                dropTargetId={dropTargetId}
+                draggingId={draggingId}
                 onSelect={handleTileClick}
                 onOpen={handleTileOpen}
                 onContext={openContext}
-                dragId={dragId}
-                onDropItem={handleDropItem}
+                onMovePointerDown={onMovePointerDown}
               />
             </>
           ) : null}
         </div>
       )}
+
+      {dragGhost &&
+        createPortal(
+          <div
+            className="pointer-events-none fixed z-[200] max-w-[160px] -translate-x-1/2 -translate-y-1/2 rounded-xl border border-accent/40 bg-surface px-3 py-2 text-sm font-semibold text-ink shadow-desk"
+            style={{ left: dragGhost.x, top: dragGhost.y }}
+          >
+            {dragGhost.name}
+          </div>,
+          document.body,
+        )}
 
       {launchingId &&
         launchingItem &&
@@ -1099,9 +1373,28 @@ export function DesktopView({
                 {selected.isGroup ? "Abrir carpeta" : "Abrir"}
               </CtxBtn>
               <CtxBtn onClick={() => void openEdit(selected)}>Editar</CtxBtn>
-              {!selected.isGroup && (
+              {!selected.isGroup &&
+                selected.kind !== "game" &&
+                deskTab !== "games" && (
                 <CtxBtn onClick={() => setModal("move")}>
                   Mover a carpeta…
+                </CtxBtn>
+              )}
+              {!selected.isGroup && selected.kind === "game" && (
+                <CtxBtn
+                  onClick={() => {
+                    void onSetFavorite(selected.id, !selected.favorite);
+                    setModal(null);
+                    flash(
+                      selected.favorite
+                        ? "Quitado de favoritos"
+                        : "Añadido a favoritos",
+                    );
+                  }}
+                >
+                  {selected.favorite
+                    ? "Quitar de favoritos"
+                    : "Marcar como favorito"}
                 </CtxBtn>
               )}
               {!selected.isGroup && selected.kind !== "app" && (
@@ -1246,15 +1539,17 @@ export function DesktopView({
                     onClick={() => void pickFiles()}
                     disabled={busy}
                   />
-                  <AddChoice
-                    icon={<FolderPlus className="size-5" strokeWidth={1.8} />}
-                    title="Nueva carpeta"
-                    hint="Organizar por categoría"
-                    onClick={() => {
-                      setDraftName("");
-                      setModal("folder");
-                    }}
-                  />
+                  {deskTab === "apps" && (
+                    <AddChoice
+                      icon={<FolderPlus className="size-5" strokeWidth={1.8} />}
+                      title="Nueva carpeta"
+                      hint="Organizar apps por categoría"
+                      onClick={() => {
+                        setDraftName("");
+                        setModal("folder");
+                      }}
+                    />
+                  )}
                   <AddChoice
                     icon={<Link2 className="size-5" strokeWidth={1.8} />}
                     title="Enlace web"

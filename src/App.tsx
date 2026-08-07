@@ -1,5 +1,4 @@
 import { useEffect, useState } from "react";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Clipboard,
   Cpu,
@@ -10,6 +9,7 @@ import type { ViewMode } from "./types";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { useClipboardHistory } from "./hooks/useClipboard";
 import { useTheme } from "./hooks/useTheme";
+import { useWindowPrefs } from "./hooks/useWindowPrefs";
 import { DesktopView } from "./components/DesktopView";
 import { ClipboardView } from "./components/ClipboardView";
 import { PcInfoView } from "./components/PcInfoView";
@@ -27,12 +27,10 @@ function App() {
   const shortcuts = useShortcuts();
   const clipboard = useClipboardHistory();
   const { theme, setTheme, ready: themeReady } = useTheme();
+  const windowPrefs = useWindowPrefs();
 
-  const dataReady = shortcuts.ready && clipboard.ready && themeReady;
-
-  useEffect(() => {
-    void getCurrentWindow().maximize().catch(() => {});
-  }, []);
+  const dataReady =
+    shortcuts.ready && clipboard.ready && themeReady && windowPrefs.ready;
 
   useEffect(() => {
     if (!dataReady) return;
@@ -61,7 +59,6 @@ function App() {
         aria-hidden
       />
 
-      {/* Frameless title strip */}
       <header className="relative z-20 col-span-full flex h-9 items-center border-b border-line bg-surface/90 backdrop-blur-xl md:col-span-2">
         <div
           className="flex min-w-0 flex-1 items-center gap-2 px-3"
@@ -74,7 +71,10 @@ function App() {
             DeskAll
           </span>
         </div>
-        <WindowControls />
+        <WindowControls
+          closeToMinimize={windowPrefs.prefs.closeToMinimize}
+          onQuit={() => void windowPrefs.quit()}
+        />
       </header>
 
       <aside className="relative z-1 flex flex-col gap-6 border-b border-line bg-surface/80 px-4 pt-4 pb-3 backdrop-blur-xl md:border-r md:border-b-0 md:pb-4">
@@ -144,6 +144,7 @@ function App() {
             onRename={shortcuts.rename}
             onSetIcon={shortcuts.setIcon}
             onSetKind={shortcuts.setKind}
+            onSetFavorite={shortcuts.setFavorite}
             onRemove={shortcuts.remove}
             onReorder={shortcuts.reorder}
             onUsageStart={shortcuts.startUsageSession}
@@ -168,6 +169,9 @@ function App() {
             clipboardEntries={clipboard.entries}
             onRestoreShortcuts={shortcuts.replaceAll}
             onRestoreClipboard={clipboard.replaceAll}
+            windowPrefs={windowPrefs.prefs}
+            onWindowPrefsChange={(p) => void windowPrefs.update(p)}
+            onQuit={() => void windowPrefs.quit()}
           />
         )}
       </main>

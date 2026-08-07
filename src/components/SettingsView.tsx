@@ -8,6 +8,7 @@ import {
   LoaderCircle,
   Monitor,
   Moon,
+  Power,
   RefreshCw,
   Sun,
   Upload,
@@ -17,7 +18,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { LazyStore } from "@tauri-apps/plugin-store";
 import type { ClipboardEntry, ShortcutItem, ThemeMode } from "../types";
-import { btnGhost, btnPrimary } from "../lib/ui";
+import type { WindowPrefs } from "../hooks/useWindowPrefs";
+import { btnDanger, btnGhost, btnPrimary } from "../lib/ui";
 import { backupFileName, buildBackup, parseBackup } from "../lib/backup";
 import { readTextFile, writeTextFile } from "../lib/tauri";
 import {
@@ -37,6 +39,9 @@ interface Props {
   clipboardEntries: ClipboardEntry[];
   onRestoreShortcuts: (items: ShortcutItem[]) => Promise<void>;
   onRestoreClipboard: (entries: ClipboardEntry[]) => Promise<void>;
+  windowPrefs: WindowPrefs;
+  onWindowPrefsChange: (partial: Partial<WindowPrefs>) => void;
+  onQuit: () => void;
 }
 
 const OPTIONS: {
@@ -57,6 +62,9 @@ export function SettingsView({
   clipboardEntries,
   onRestoreShortcuts,
   onRestoreClipboard,
+  windowPrefs,
+  onWindowPrefsChange,
+  onQuit,
 }: Props) {
   const [version, setVersion] = useState("…");
   const [repo, setRepo] = useState(DEFAULT_GITHUB_REPO);
@@ -171,7 +179,7 @@ export function SettingsView({
       <header>
         <h1 className="m-0 font-display text-2xl tracking-tight">Ajustes</h1>
         <p className="mt-1 text-sm text-muted">
-          Tema, copia de seguridad y actualizaciones · v{version}
+          Tema, ventana, copia de seguridad y actualizaciones · v{version}
         </p>
       </header>
 
@@ -199,6 +207,45 @@ export function SettingsView({
             );
           })}
         </div>
+      </div>
+
+      <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
+        <h2 className="m-0 font-display text-lg tracking-tight">Ventana</h2>
+        <p className="mt-1 text-sm text-muted">
+          Inicio con Windows y comportamiento en la barra de tareas.
+        </p>
+        <div className="mt-4 flex flex-col gap-2">
+          <ToggleRow
+            label="Iniciar con Windows"
+            hint="Abre DeskAll al encender el PC"
+            checked={windowPrefs.launchAtStartup}
+            onChange={(v) => onWindowPrefsChange({ launchAtStartup: v })}
+          />
+          <ToggleRow
+            label="Abrir minimizada al iniciar"
+            hint="Al arrancar el PC, queda en la barra de tareas"
+            checked={windowPrefs.startMinimized}
+            disabled={!windowPrefs.launchAtStartup}
+            onChange={(v) => onWindowPrefsChange({ startMinimized: v })}
+          />
+          <ToggleRow
+            label="Al cerrar, minimizar"
+            hint="La X deja DeskAll en la barra de tareas en lugar de salir"
+            checked={windowPrefs.closeToMinimize}
+            onChange={(v) => onWindowPrefsChange({ closeToMinimize: v })}
+          />
+        </div>
+        {windowPrefs.closeToMinimize && (
+          <div className="mt-4">
+            <button type="button" className={btnDanger} onClick={onQuit}>
+              <Power className="size-4" strokeWidth={1.8} />
+              Salir de DeskAll
+            </button>
+            <p className="mt-2 m-0 text-xs text-muted">
+              También puedes salir con Mayús + clic en la X.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
@@ -344,5 +391,54 @@ export function SettingsView({
         )}
       </div>
     </section>
+  );
+}
+
+function ToggleRow({
+  label,
+  hint,
+  checked,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  hint: string;
+  checked: boolean;
+  disabled?: boolean;
+  onChange: (value: boolean) => void;
+}) {
+  return (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={[
+        "flex w-full items-center gap-3 rounded-2xl border px-4 py-3 text-left transition",
+        disabled
+          ? "cursor-not-allowed border-line/60 bg-paper/40 opacity-55"
+          : checked
+            ? "cursor-pointer border-accent/35 bg-accent-soft"
+            : "cursor-pointer border-line bg-paper/60 hover:border-line",
+      ].join(" ")}
+    >
+      <span
+        className={[
+          "relative grid h-6 w-10 shrink-0 place-items-center rounded-full transition",
+          checked ? "bg-accent" : "bg-line",
+        ].join(" ")}
+        aria-hidden
+      >
+        <span
+          className={[
+            "absolute top-0.5 size-5 rounded-full bg-paper shadow transition",
+            checked ? "left-4" : "left-0.5",
+          ].join(" ")}
+        />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block font-semibold">{label}</span>
+        <span className="block text-xs text-muted">{hint}</span>
+      </span>
+    </button>
   );
 }

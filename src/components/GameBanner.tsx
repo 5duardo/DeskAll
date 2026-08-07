@@ -1,4 +1,5 @@
-import { Gamepad2 } from "./icons";
+import { Gamepad2, Star } from "./icons";
+import { memo } from "react";
 import type { ShortcutItem } from "../types";
 import { FitIcon } from "./FitIcon";
 
@@ -7,11 +8,13 @@ interface Props {
   selected: boolean;
   launching?: boolean;
   active?: boolean;
+  dropTarget?: boolean;
+  dragging?: boolean;
   onOpen: () => void;
   onSelect: () => void;
   onContext: (e: React.MouseEvent) => void;
-  onDragStart: (e: React.DragEvent) => void;
-  onDrop: (e: React.DragEvent) => void;
+  onMovePointerDown?: (e: React.PointerEvent, id: string) => void;
+  onToggleFavorite?: () => void;
 }
 
 function formatLastPlayed(ts?: number): string {
@@ -33,27 +36,34 @@ function formatLastPlayed(ts?: number): string {
 }
 
 /** Rectangular banner with blurred icon as background. */
-export function GameBanner({
+function GameBannerView({
   item,
   selected,
   launching,
   active,
+  dropTarget = false,
+  dragging = false,
   onOpen,
   onSelect,
   onContext,
-  onDragStart,
-  onDrop,
+  onMovePointerDown,
+  onToggleFavorite,
 }: Props) {
   const hasIcon = Boolean(item.iconDataUrl);
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
+      data-deskall-id={item.id}
+      data-deskall-drop="item"
       className={[
-        "group relative flex aspect-[16/10] w-full cursor-pointer flex-col overflow-hidden rounded-none border text-inherit transition duration-200",
+        "group relative flex aspect-[16/10] w-full cursor-pointer flex-col overflow-hidden rounded-none border text-inherit transition duration-200 select-none",
         selected
           ? "border-accent/50 shadow-[0_0_0_1px_color-mix(in_oklab,var(--color-accent)_40%,transparent),0_12px_32px_rgb(0_0_0_/0.4)]"
           : "border-line/50 hover:border-ink/20 hover:-translate-y-0.5 hover:shadow-desk",
+        dropTarget ? "border-accent ring-2 ring-accent/40" : "",
+        dragging ? "pointer-events-none opacity-35" : "",
         launching ? "tile-launching pointer-events-none" : "",
       ].join(" ")}
       style={
@@ -63,27 +73,54 @@ export function GameBanner({
             }
           : undefined
       }
-      draggable
-      onDragStart={onDragStart}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={onDrop}
+      onPointerDown={(e) => {
+        if (e.button !== 0) return;
+        onMovePointerDown?.(e, item.id);
+      }}
       onClick={onSelect}
       onDoubleClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         onOpen();
       }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       onContextMenu={onContext}
       aria-pressed={selected}
-      title={`${item.name}\nClic: detalles · Doble clic: abrir`}
+      title={`${item.name}\nClic: detalles · Arrastra · Estrella: favorito`}
     >
+      {onToggleFavorite && (
+        <button
+          type="button"
+          className={[
+            "absolute top-2.5 right-2.5 z-20 grid size-8 cursor-pointer place-items-center rounded-full border-0 transition",
+            item.favorite
+              ? "bg-black/45 text-amber-300"
+              : "bg-black/35 text-white/55 opacity-0 group-hover:opacity-100",
+          ].join(" ")}
+          title={item.favorite ? "Quitar de favoritos" : "Marcar favorito"}
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onToggleFavorite();
+          }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <Star className="size-3.5" strokeWidth={1.8} />
+        </button>
+      )}
+
       {hasIcon && (
         <>
           <img
             src={item.iconDataUrl!}
             alt=""
             aria-hidden
-            className="pointer-events-none absolute inset-[-28%] size-[156%] max-w-none scale-110 object-cover opacity-80 blur-[28px] saturate-[1.15] brightness-[0.72] transition duration-300 group-hover:opacity-90 group-hover:brightness-[0.8]"
+            className="pointer-events-none absolute inset-[-20%] size-[140%] max-w-none scale-105 object-cover opacity-65 blur-[18px] saturate-[1.1] brightness-[0.72] transition duration-300 group-hover:opacity-75 group-hover:brightness-[0.8]"
             draggable={false}
           />
           <span
@@ -108,7 +145,7 @@ export function GameBanner({
         />
       )}
 
-      <span className="relative z-[1] flex min-h-0 flex-1 items-center justify-center px-4 pt-4 pb-1">
+      <span className="pointer-events-none relative z-[1] flex min-h-0 flex-1 items-center justify-center px-4 pt-4 pb-1">
         {hasIcon ? (
           item.iconCustom ? (
             <img
@@ -134,14 +171,27 @@ export function GameBanner({
         )}
       </span>
 
-      <span className="relative z-[1] flex w-full shrink-0 flex-col items-start gap-0.5 px-3.5 pt-1 pb-3.5 text-left">
+      <span className="pointer-events-none relative z-[1] flex w-full shrink-0 flex-col items-start gap-0.5 px-3.5 pt-1 pb-3.5 text-left">
         <span className="w-full truncate text-sm font-semibold tracking-tight text-white drop-shadow-md">
           {item.name}
         </span>
         <span className="w-full truncate text-xs text-white/60">
-          {active ? "En uso ahora" : formatLastPlayed(item.lastUsedAt)}
+          {dropTarget
+            ? "Soltar aquí"
+            : active
+              ? "En uso ahora"
+              : formatLastPlayed(item.lastUsedAt)}
         </span>
       </span>
-    </button>
+    </div>
   );
 }
+
+export const GameBanner = memo(GameBannerView, (prev, next) =>
+  prev.item === next.item &&
+  prev.selected === next.selected &&
+  prev.launching === next.launching &&
+  prev.active === next.active &&
+  prev.dropTarget === next.dropTarget &&
+  prev.dragging === next.dragging,
+);

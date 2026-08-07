@@ -1,5 +1,8 @@
 export type ItemKind = "app" | "game" | "folder" | "file" | "url";
 
+/** Which desktop tab a DeskAll folder belongs to (folders are not shared). */
+export type DeskTabId = "apps" | "games" | "files";
+
 export interface ShortcutItem {
   id: string;
   name: string;
@@ -26,6 +29,10 @@ export interface ShortcutItem {
   isGroup?: boolean;
   /** Parent category folder id; null/undefined = desktop root */
   parentId?: string | null;
+  /** Tab that owns this folder (only for isGroup). Defaults to apps if missing. */
+  groupTab?: DeskTabId;
+  /** Favorite (used to group games) */
+  favorite?: boolean;
 }
 
 export type ClipboardKind = "text" | "image";

@@ -9,19 +9,21 @@ import type { ItemKind, ShortcutItem } from "../types";
 import { KIND_LABELS } from "../types";
 import { formatUsage } from "../lib/usage";
 import { FitIcon } from "./FitIcon";
+import { memo } from "react";
 
 interface Props {
   item: ShortcutItem;
   selected: boolean;
   launching?: boolean;
   active?: boolean;
-  /** Items inside a category folder */
   childCount?: number;
+  dropTarget?: boolean;
+  dragging?: boolean;
   onOpen: () => void;
   onSelect: () => void;
   onContext: (e: React.MouseEvent) => void;
-  onDragStart: (e: React.DragEvent) => void;
-  onDrop: (e: React.DragEvent) => void;
+  /** Start pointer-drag for moving into folders */
+  onMovePointerDown?: (e: React.PointerEvent, id: string) => void;
 }
 
 function KindGlyph({ kind }: { kind: ItemKind }) {
@@ -40,48 +42,62 @@ function KindGlyph({ kind }: { kind: ItemKind }) {
   }
 }
 
-export function ShortcutTile({
+function ShortcutTileView({
   item,
   selected,
   launching,
   active,
   childCount = 0,
+  dropTarget = false,
+  dragging = false,
   onOpen,
   onSelect,
   onContext,
-  onDragStart,
-  onDrop,
+  onMovePointerDown,
 }: Props) {
   const usage = item.usageMs ?? 0;
   const isGroup = Boolean(item.isGroup);
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
+      data-deskall-id={item.id}
+      data-deskall-drop={isGroup ? "folder" : "item"}
       className={[
-        "group relative flex cursor-pointer flex-col items-center gap-2 rounded-2xl border px-2 pt-3 pb-2.5 text-inherit transition duration-200",
+        "group relative flex cursor-pointer flex-col items-center gap-2 rounded-2xl border px-2 pt-3 pb-2.5 text-inherit transition duration-200 select-none",
         "hover:-translate-y-0.5 hover:bg-surface/60",
         selected
           ? "tile-selected border-transparent bg-surface/80"
           : "border-transparent",
+        dropTarget
+          ? "border-accent/50 bg-accent-soft ring-2 ring-accent/35 -translate-y-0.5 scale-[1.02]"
+          : "",
+        dragging ? "pointer-events-none opacity-35" : "",
         launching ? "tile-launching pointer-events-none" : "",
       ].join(" ")}
-      draggable={!isGroup}
-      onDragStart={onDragStart}
-      onDragOver={(e) => e.preventDefault()}
-      onDrop={onDrop}
+      onPointerDown={(e) => {
+        if (e.button !== 0 || isGroup) return;
+        onMovePointerDown?.(e, item.id);
+      }}
       onClick={onSelect}
       onDoubleClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
         onOpen();
       }}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onSelect();
+        }
+      }}
       onContextMenu={onContext}
       aria-pressed={selected}
       title={
         isGroup
-          ? `${item.name}\nClic: abrir carpeta`
-          : `${item.name}\nClic: detalles · Doble clic: abrir`
+          ? `${item.name}\nClic: abrir carpeta · Suelta apps aquí`
+          : `${item.name}\nClic: detalles · Arrastra a una carpeta`
       }
     >
       {selected && (
@@ -99,8 +115,8 @@ export function ShortcutTile({
       )}
       <span
         className={[
-          "relative grid size-16 place-items-center transition duration-200",
-          selected ? "scale-105" : "group-hover:scale-[1.03]",
+          "pointer-events-none relative grid size-16 place-items-center transition duration-200",
+          selected || dropTarget ? "scale-105" : "group-hover:scale-[1.03]",
         ].join(" ")}
       >
         {item.iconDataUrl ? (
@@ -123,7 +139,7 @@ export function ShortcutTile({
           </span>
         )}
       </span>
-      <span className="flex w-full flex-col gap-0.5 text-center">
+      <span className="pointer-events-none flex w-full flex-col gap-0.5 text-center">
         <span
           className={[
             "line-clamp-2 text-sm leading-snug font-semibold",
@@ -134,10 +150,22 @@ export function ShortcutTile({
         </span>
         <span className="text-xs text-muted">
           {isGroup
-            ? `Carpeta · ${childCount}`
+            ? dropTarget
+              ? "Soltar aquí"
+              : `Carpeta · ${childCount}`
             : `${KIND_LABELS[item.kind]}${usage > 0 ? ` · ${formatUsage(usage)}` : ""}`}
         </span>
       </span>
-    </button>
+    </div>
   );
 }
+
+export const ShortcutTile = memo(ShortcutTileView, (prev, next) =>
+  prev.item === next.item &&
+  prev.selected === next.selected &&
+  prev.launching === next.launching &&
+  prev.active === next.active &&
+  prev.childCount === next.childCount &&
+  prev.dropTarget === next.dropTarget &&
+  prev.dragging === next.dragging,
+);

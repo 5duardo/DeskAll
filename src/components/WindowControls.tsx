@@ -3,14 +3,18 @@ import { Minus, Square, X } from "./icons";
 
 const win = () => getCurrentWindow();
 
+interface Props {
+  /** When true, the close button minimizes to the taskbar */
+  closeToMinimize?: boolean;
+  /** Force quit (bypasses close-to-minimize) */
+  onQuit?: () => void;
+}
+
 /** Custom title-bar controls (frameless window). */
-export function WindowControls() {
+export function WindowControls({ closeToMinimize = false, onQuit }: Props) {
   return (
     <div className="flex shrink-0 items-center">
-      <CtrlBtn
-        title="Minimizar"
-        onClick={() => void win().minimize()}
-      >
+      <CtrlBtn title="Minimizar" onClick={() => void win().minimize()}>
         <Minus className="size-3.5" strokeWidth={2} />
       </CtrlBtn>
       <CtrlBtn
@@ -26,9 +30,22 @@ export function WindowControls() {
         <Square className="size-3" strokeWidth={2} />
       </CtrlBtn>
       <CtrlBtn
-        title="Cerrar"
+        title={
+          closeToMinimize
+            ? "Minimizar a la barra de tareas (Mayús+clic para salir)"
+            : "Cerrar"
+        }
         danger
-        onClick={() => void win().close()}
+        onClick={(e) => {
+          void (async () => {
+            if (closeToMinimize && !e.shiftKey) {
+              await win().minimize();
+              return;
+            }
+            if (onQuit) onQuit();
+            else await win().close();
+          })();
+        }}
       >
         <X className="size-3.5" strokeWidth={2} />
       </CtrlBtn>
@@ -43,7 +60,7 @@ function CtrlBtn({
   children,
 }: {
   title: string;
-  onClick: () => void;
+  onClick: (e: React.MouseEvent<HTMLButtonElement>) => void;
   danger?: boolean;
   children: React.ReactNode;
 }) {

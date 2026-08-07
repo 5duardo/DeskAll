@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LazyStore } from "@tauri-apps/plugin-store";
-import type { ItemKind, ShortcutItem } from "../types";
+import type { DeskTabId, ItemKind, ShortcutItem } from "../types";
 import { ACCENT_COLORS } from "../types";
 import {
   createId,
@@ -156,8 +156,11 @@ export function useShortcuts() {
   useEffect(() => {
     let cancelled = false;
     let timer: number | undefined;
+    let inFlight = false;
 
     const poll = async () => {
+      if (inFlight || document.hidden) return;
+      inFlight = true;
       const list = itemsRef.current.filter(isLaunchable);
       const pathToIds = new Map<string, string[]>();
       for (const item of list) {
@@ -173,7 +176,10 @@ export function useShortcuts() {
       } catch {
         runningPaths = [];
       }
-      if (cancelled) return;
+      if (cancelled) {
+        inFlight = false;
+        return;
+      }
 
       const now = Date.now();
       const detected = new Set<string>();
@@ -208,6 +214,7 @@ export function useShortcuts() {
           endUsageSession();
         }
       }
+      inFlight = false;
     };
 
     void poll();
@@ -218,6 +225,7 @@ export function useShortcuts() {
 
     return () => {
       cancelled = true;
+      inFlight = false;
       if (timer) window.clearInterval(timer);
       window.removeEventListener("beforeunload", onUnload);
       endUsageSession();
@@ -239,6 +247,17 @@ export function useShortcuts() {
 
       let next = [...saved];
       let changed = false;
+
+      // Migrate folders: assign groupTab (default apps) so tabs stay separate
+      for (const item of next) {
+        if (item.isGroup && !item.groupTab) {
+          next = next.map((i) =>
+            i.id === item.id ? { ...i, groupTab: "apps" as DeskTabId } : i,
+          );
+          changed = true;
+        }
+      }
+
       for (const item of saved) {
         if (isHttpUrl(item.path) || item.kind === "url") {
           if (item.onDesktop) {
@@ -300,31 +319,44 @@ export function useShortcuts() {
         await store.save();
       }
 
-      let withIcons = [...next];
-      let iconChanged = false;
-      for (const item of withIcons) {
-        if (item.isGroup || item.path.startsWith("deskall://")) continue;
-        if (item.iconCustom && item.iconDataUrl) continue;
-        try {
-          const icon = await extractFittedIcon(item.path);
-          if (icon && icon !== item.iconDataUrl) {
-            withIcons = withIcons.map((i) =>
-              i.id === item.id
-                ? { ...i, iconDataUrl: icon, iconCustom: false }
-                : i,
-            );
-            iconChanged = true;
-            if (!cancelled) setItems([...withIcons]);
+      // Icon extraction is intentionally after ready: it must not block startup.
+      void (async () => {
+        let withIcons = [...next];
+        const pending = withIcons.filter(
+          (item) =>
+            !item.isGroup &&
+            !item.path.startsWith("deskall://") &&
+            !(item.iconCustom && item.iconDataUrl),
+        );
+        let cursor = 0;
+        let iconChanged = false;
+
+        async function worker() {
+          while (!cancelled) {
+            const item = pending[cursor++];
+            if (!item) return;
+            try {
+              const icon = await extractFittedIcon(item.path);
+              if (!icon || icon === item.iconDataUrl || cancelled) continue;
+              withIcons = withIcons.map((current) =>
+                current.id === item.id
+                  ? { ...current, iconDataUrl: icon, iconCustom: false }
+                  : current,
+              );
+              iconChanged = true;
+              setItems([...withIcons]);
+            } catch {
+              /* ignore */
+            }
           }
-        } catch {
-          /* ignore */
         }
-      }
-      if (!cancelled && iconChanged) {
-        setItems(withIcons);
-        await store.set("shortcuts", withIcons);
-        await store.save();
-      }
+
+        await Promise.all([worker(), worker(), worker()]);
+        if (!cancelled && iconChanged) {
+          await store.set("shortcuts", withIcons);
+          await store.save();
+        }
+      })();
     })();
     return () => {
       cancelled = true;
@@ -446,10 +478,18 @@ export function useShortcuts() {
   );
 
   const addGroup = useCallback(
-    async (name: string, parentId?: string | null) => {
+    async (
+      name: string,
+      parentId?: string | null,
+      groupTab: DeskTabId = "apps",
+    ) => {
       const items = itemsRef.current;
       const trimmed = name.trim() || "Nueva carpeta";
       const id = createId();
+      const parent = parentId
+        ? items.find((i) => i.id === parentId && i.isGroup)
+        : null;
+      const tab = parent?.groupTab ?? groupTab;
       const item: ShortcutItem = {
         id,
         name: trimmed,
@@ -463,6 +503,7 @@ export function useShortcuts() {
         launchCount: 0,
         isGroup: true,
         parentId: parentId ?? null,
+        groupTab: tab,
       };
       await persist([...items, item]);
       return item;
@@ -539,7 +580,21 @@ export function useShortcuts() {
   const setKind = useCallback(
     async (id: string, kind: ItemKind) => {
       const items = itemsRef.current;
-      await persist(items.map((i) => (i.id === id ? { ...i, kind } : i)));
+      await persist(
+        items.map((i) =>
+          i.id === id ? { ...i, kind, parentId: null } : i,
+        ),
+      );
+    },
+    [persist],
+  );
+
+  const setFavorite = useCallback(
+    async (id: string, favorite: boolean) => {
+      const items = itemsRef.current;
+      await persist(
+        items.map((i) => (i.id === id ? { ...i, favorite } : i)),
+      );
     },
     [persist],
   );
@@ -613,6 +668,7 @@ export function useShortcuts() {
     rename,
     setIcon,
     setKind,
+    setFavorite,
     remove,
     reorder,
     startUsageSession,

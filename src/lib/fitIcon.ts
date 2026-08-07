@@ -1,6 +1,18 @@
 /** Cache trimmed data-URLs (versioned to bust bad entries). */
 const CACHE_VER = "v5";
 const trimmedCache = new Map<string, string>();
+const pendingFits = new Map<string, Promise<string>>();
+const MAX_CACHE_ENTRIES = 160;
+
+function cacheIcon(key: string, value: string): void {
+  trimmedCache.delete(key);
+  trimmedCache.set(key, value);
+  while (trimmedCache.size > MAX_CACHE_ENTRIES) {
+    const oldest = trimmedCache.keys().next().value;
+    if (!oldest) break;
+    trimmedCache.delete(oldest);
+  }
+}
 
 function cacheKey(src: string, outSize: number): string {
   // Many PNGs share the same data-URL prefix; sample head/mid/tail.
@@ -77,7 +89,7 @@ function isPadding(p: Rgba, bg: Rgba): boolean {
  * Crop padding from an icon and redraw filling a square canvas.
  * Fixes Shell icons that embed a tiny glyph in a large dark/transparent square.
  */
-export async function fitIconDataUrl(
+async function fitIconDataUrlImpl(
   src: string,
   outSize = 128,
 ): Promise<string> {
@@ -89,7 +101,7 @@ export async function fitIconDataUrl(
   const w = img.naturalWidth || img.width;
   const h = img.naturalHeight || img.height;
   if (!w || !h) {
-    trimmedCache.set(key, src);
+    cacheIcon(key, src);
     return src;
   }
 
@@ -98,7 +110,7 @@ export async function fitIconDataUrl(
   probe.height = h;
   const pctx = probe.getContext("2d", { willReadFrequently: true });
   if (!pctx) {
-    trimmedCache.set(key, src);
+    cacheIcon(key, src);
     return src;
   }
   pctx.clearRect(0, 0, w, h);
@@ -179,7 +191,7 @@ export async function fitIconDataUrl(
   }
 
   if (!found) {
-    trimmedCache.set(key, src);
+    cacheIcon(key, src);
     return src;
   }
 
@@ -197,7 +209,7 @@ export async function fitIconDataUrl(
   out.height = outSize;
   const octx = out.getContext("2d");
   if (!octx) {
-    trimmedCache.set(key, src);
+    cacheIcon(key, src);
     return src;
   }
   octx.clearRect(0, 0, outSize, outSize);
@@ -222,8 +234,24 @@ export async function fitIconDataUrl(
   );
 
   const result = out.toDataURL("image/png");
-  trimmedCache.set(key, result);
+  cacheIcon(key, result);
   return result;
+}
+
+/** Fits an icon once even when several tiles request it simultaneously. */
+export function fitIconDataUrl(src: string, outSize = 128): Promise<string> {
+  const key = cacheKey(src, outSize);
+  const cached = trimmedCache.get(key);
+  if (cached) return Promise.resolve(cached);
+
+  const pending = pendingFits.get(key);
+  if (pending) return pending;
+
+  const work = fitIconDataUrlImpl(src, outSize).finally(() => {
+    pendingFits.delete(key);
+  });
+  pendingFits.set(key, work);
+  return work;
 }
 
 /** Square-crop user image for a custom tile avatar (no shell padding trim). */

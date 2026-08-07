@@ -217,6 +217,17 @@ export async function readTextFile(path: string): Promise<string> {
   return invoke<string>("read_text_file", { path });
 }
 
+export async function setLaunchAtStartup(
+  enabled: boolean,
+  minimized: boolean,
+): Promise<void> {
+  await invoke("set_launch_at_startup", { enabled, minimized });
+}
+
+export async function isLaunchAtStartup(): Promise<boolean> {
+  return invoke<boolean>("is_launch_at_startup");
+}
+
 export function createId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }

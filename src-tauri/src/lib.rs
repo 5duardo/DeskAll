@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod autostart;
 mod icons;
 mod installed;
 mod process;
@@ -675,14 +677,51 @@ fn fetch_remote_image_png(url: String, size: Option<u32>) -> Result<String, Stri
     game_covers::fetch_image_png_data_url(&url, size.unwrap_or(192))
 }
 
+#[tauri::command]
+fn set_launch_at_startup(enabled: bool, minimized: bool) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        autostart::set_launch_at_startup(enabled, minimized)
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = (enabled, minimized);
+        Err("Inicio automático solo disponible en Windows".into())
+    }
+}
+
+#[tauri::command]
+fn is_launch_at_startup() -> Result<bool, String> {
+    #[cfg(windows)]
+    {
+        autostart::is_launch_at_startup()
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(false)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let start_minimized = std::env::args().any(|a| a == "--minimized");
+
     tauri::Builder::default()
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .setup(move |app| {
+            if let Some(win) = app.get_webview_window("main") {
+                if start_minimized {
+                    let _ = win.minimize();
+                } else {
+                    let _ = win.maximize();
+                }
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             get_path_info,
             extract_file_icon,
@@ -710,7 +749,9 @@ pub fn run() {
             get_clipboard_kind_dir,
             save_clipboard_text,
             save_clipboard_image,
-            delete_clipboard_file
+            delete_clipboard_file,
+            set_launch_at_startup,
+            is_launch_at_startup
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -34,8 +34,10 @@ import {
   FaMoon,
   FaPencil,
   FaPlus,
+  FaPowerOff,
   FaServer,
   FaSquare,
+  FaStar,
   FaSun,
   FaTableCellsLarge,
   FaThumbtack,
@@ -87,7 +89,9 @@ export const Gamepad2 = solid(FaGamepad);
 export const Link2 = solid(FaLink);
 export const Pencil = solid(FaPencil);
 export const Plus = solid(FaPlus);
+export const Power = solid(FaPowerOff);
 export const Search = solid(FaMagnifyingGlass);
+export const Star = solid(FaStar);
 export const Upload = solid(FaUpload);
 export const X = solid(FaXmark);
 export const FileText = solid(FaFileLines);

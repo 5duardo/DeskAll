@@ -914,6 +914,7 @@ dependencies = [
  "ureq",
  "windows 0.61.3",
  "windows-icons",
+ "winreg",
 ]
 
 [[package]]
