@@ -45,34 +45,62 @@ pub fn list_icon_data_urls(path: &str) -> Vec<String> {
 
 #[cfg(windows)]
 fn extract_windows(path: &str) -> Option<String> {
-    // Prefer resolved target for .lnk so we don't get the overlay arrow,
-    // and so we pull the real high-res icon resource.
-    let source = resolve_shortcut_target(path).unwrap_or_else(|| path.to_string());
+    let is_lnk = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("lnk"))
+        .unwrap_or(false);
 
-    // Prefer first embedded icon at high res when available
-    if let Some(png) = extract_icon_index(&source, 0, 256) {
-        return Some(encode_data_url(&png));
+    // 1) For .lnk: Shell on the shortcut itself (uses IconLocation, matches Explorer).
+    //    ExtractIconEx on the target often yields 32px → pixelated tiles, or the wrong
+    //    resource (e.g. Discord Update.exe → generic document glyph).
+    if is_lnk {
+        if let Some(png) = extract_via_shell_item(path, 256) {
+            return Some(encode_data_url(&png));
+        }
+        if let Some((icon_file, index)) = shortcut_icon_location(path) {
+            if let Some(png) = extract_private_icons(&icon_file, index, 256) {
+                return Some(encode_data_url(&png));
+            }
+            if let Some(png) = extract_via_shell_item(&icon_file, 256) {
+                return Some(encode_data_url(&png));
+            }
+            if let Some(png) = extract_icon_index(&icon_file, index, 0) {
+                return Some(encode_data_url(&png));
+            }
+        }
     }
 
-    // 1) Best quality: IShellItemImageFactory @ 256
+    let source = resolve_shortcut_target(path).unwrap_or_else(|| path.to_string());
+
+    // 2) Best quality: IShellItemImageFactory @ 256
     if let Some(png) = extract_via_shell_item(&source, 256) {
         return Some(encode_data_url(&png));
     }
 
-    // 2) Jumbo system image list (256) without overlay
-    if let Some(png) = extract_via_image_list(&source, windows::Win32::UI::Shell::SHIL_JUMBO, 256)
-    {
+    // 3) PrivateExtractIconsW requesting 256 (picks largest matching resource)
+    if let Some(png) = extract_private_icons(&source, 0, 256) {
         return Some(encode_data_url(&png));
     }
 
-    // 3) Extra-large (48) — will be upscaled after trim
+    // 4) Jumbo system image list (256)
+    if let Some(png) = extract_via_image_list(&source, windows::Win32::UI::Shell::SHIL_JUMBO, 0) {
+        return Some(encode_data_url(&png));
+    }
+
+    // 5) Extra-large (48) — Lanczos upscale after trim
     if let Some(png) =
-        extract_via_image_list(&source, windows::Win32::UI::Shell::SHIL_EXTRALARGE, 48)
+        extract_via_image_list(&source, windows::Win32::UI::Shell::SHIL_EXTRALARGE, 0)
     {
         return Some(encode_data_url(&png));
     }
 
-    // 4) Legacy fallback — still normalize size / padding
+    // 6) ExtractIconEx at native size (last resort — often only 32px)
+    if let Some(png) = extract_icon_index(&source, 0, 0) {
+        return Some(encode_data_url(&png));
+    }
+
+    // 7) Legacy crate fallback
     let b64 = windows_icons::get_icon_base64_by_path(&source).ok()?;
     let clean = b64
         .strip_prefix("data:image/png;base64,")
@@ -85,27 +113,32 @@ fn extract_windows(path: &str) -> Option<String> {
 
 #[cfg(windows)]
 fn list_windows_icons(path: &str) -> Vec<String> {
-    let source = resolve_shortcut_target(path).unwrap_or_else(|| path.to_string());
     let mut out = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
-    let count = icon_count(&source).unwrap_or(0).min(48);
-    for i in 0..count {
-        if let Some(png) = extract_icon_index(&source, i as i32, 256) {
-            let url = encode_data_url(&png);
-            // Dedup identical frames
-            let key = url.len().to_string() + &url[url.len().saturating_sub(48)..];
-            if seen.insert(key) {
-                out.push(url);
-            }
+    let push = |url: String, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>| {
+        let key = url.len().to_string() + &url[url.len().saturating_sub(48)..];
+        if seen.insert(key) {
+            out.push(url);
         }
+    };
+
+    // Default shell extraction first (best match for what Explorer shows)
+    if let Some(def) = extract_windows(path) {
+        push(def, &mut out, &mut seen);
     }
 
-    // Always include the shell/default extraction as an option
-    if let Some(def) = extract_windows(path) {
-        let key = def.len().to_string() + &def[def.len().saturating_sub(48)..];
-        if seen.insert(key) {
-            out.insert(0, def);
+    let icon_source = shortcut_icon_location(path)
+        .map(|(p, _)| p)
+        .or_else(|| resolve_shortcut_target(path))
+        .unwrap_or_else(|| path.to_string());
+
+    let count = icon_count(&icon_source).unwrap_or(0).min(48);
+    for i in 0..count {
+        if let Some(png) = extract_private_icons(&icon_source, i as i32, 256)
+            .or_else(|| extract_icon_index(&icon_source, i as i32, 0))
+        {
+            push(encode_data_url(&png), &mut out, &mut seen);
         }
     }
 
@@ -137,8 +170,9 @@ fn icon_count(path: &str) -> Option<u32> {
     }
 }
 
+/// `size_hint` 0 = draw at the HICON's native bitmap size (no GDI stretch).
 #[cfg(windows)]
-fn extract_icon_index(path: &str, index: i32, size: i32) -> Option<Vec<u8>> {
+fn extract_icon_index(path: &str, index: i32, size_hint: i32) -> Option<Vec<u8>> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::UI::Shell::ExtractIconExW;
@@ -161,9 +195,62 @@ fn extract_icon_index(path: &str, index: i32, size: i32) -> Option<Vec<u8>> {
         if got == 0 || large.is_invalid() {
             return None;
         }
-        let rgba = hicon_to_rgba(large, size);
+        let rgba = hicon_to_rgba(large, size_hint);
         let _ = DestroyIcon(large);
         let (pixels, w, h) = rgba?;
+        finalize_rgba(pixels, w, h)
+    }
+}
+
+/// Request a specific pixel size from the PE/ICO resource table.
+#[cfg(windows)]
+fn extract_private_icons(path: &str, index: i32, size: i32) -> Option<Vec<u8>> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, HICON};
+
+    #[link(name = "user32")]
+    unsafe extern "system" {
+        fn PrivateExtractIconsW(
+            sz_file_name: *const u16,
+            n_icon_index: i32,
+            cx_icon: i32,
+            cy_icon: i32,
+            phicon: *mut HICON,
+            piconid: *mut u32,
+            n_icons: u32,
+            flags: u32,
+        ) -> u32;
+    }
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    unsafe {
+        let mut hicon = HICON::default();
+        let mut icon_id = 0u32;
+        let got = PrivateExtractIconsW(
+            wide.as_ptr(),
+            index,
+            size,
+            size,
+            &mut hicon,
+            &mut icon_id,
+            1,
+            0,
+        );
+        if got == 0 || hicon.is_invalid() {
+            return None;
+        }
+        // Draw at requested size — PrivateExtractIcons already selected the best resource
+        let rgba = hicon_to_rgba(hicon, size);
+        let _ = DestroyIcon(hicon);
+        let (pixels, w, h) = rgba?;
+        // Reject tiny / failed extracts that would look pixelated after upscale
+        if w.max(h) < 48 && size >= 128 {
+            return None;
+        }
         finalize_rgba(pixels, w, h)
     }
 }
@@ -197,6 +284,7 @@ fn extract_via_shell_item(path: &str, size: i32) -> Option<Vec<u8>> {
     use windows::Win32::System::Com::{CoInitializeEx, COINIT_APARTMENTTHREADED};
     use windows::Win32::UI::Shell::{
         SHCreateItemFromParsingName, IShellItemImageFactory, SIIGBF_BIGGERSIZEOK, SIIGBF_ICONONLY,
+        SIIGBF_RESIZETOFIT,
     };
 
     let wide: Vec<u16> = std::ffi::OsStr::new(path)
@@ -214,7 +302,7 @@ fn extract_via_shell_item(path: &str, size: i32) -> Option<Vec<u8>> {
                     cx: size,
                     cy: size,
                 },
-                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK,
+                SIIGBF_ICONONLY | SIIGBF_BIGGERSIZEOK | SIIGBF_RESIZETOFIT,
             )
             .ok()?;
 
@@ -224,8 +312,9 @@ fn extract_via_shell_item(path: &str, size: i32) -> Option<Vec<u8>> {
     }
 }
 
+/// `size_hint` 0 = native HICON size (preferred — avoids GDI stretch of 32→256).
 #[cfg(windows)]
-fn extract_via_image_list(path: &str, shil: u32, size: i32) -> Option<Vec<u8>> {
+fn extract_via_image_list(path: &str, shil: u32, size_hint: i32) -> Option<Vec<u8>> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::PCWSTR;
     use windows::Win32::UI::Controls::{IImageList, ILD_TRANSPARENT};
@@ -256,22 +345,24 @@ fn extract_via_image_list(path: &str, shil: u32, size: i32) -> Option<Vec<u8>> {
             return None;
         }
 
-        let rgba = hicon_to_rgba(hicon, size);
+        let rgba = hicon_to_rgba(hicon, size_hint);
         let _ = DestroyIcon(hicon);
         let (pixels, w, h) = rgba?;
         finalize_rgba(pixels, w, h)
     }
 }
 
+/// Convert HICON → RGBA. If `size_hint` is 0, use the icon's native bitmap size
+/// so we don't GDI-stretch a 32px glyph into a blurry/pixelated 256 canvas.
 #[cfg(windows)]
 fn hicon_to_rgba(
     hicon: windows::Win32::UI::WindowsAndMessaging::HICON,
-    size: i32,
+    size_hint: i32,
 ) -> Option<(Vec<u8>, u32, u32)> {
     use windows::Win32::Foundation::HWND;
     use windows::Win32::Graphics::Gdi::{
-        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, PatBlt,
-        ReleaseDC, SelectObject, BLACKNESS,
+        CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC, GetObjectW,
+        PatBlt, ReleaseDC, SelectObject, BITMAP, BLACKNESS,
     };
     use windows::Win32::UI::WindowsAndMessaging::{DrawIconEx, GetIconInfo, ICONINFO, DI_NORMAL};
 
@@ -279,8 +370,42 @@ fn hicon_to_rgba(
         let mut info = ICONINFO::default();
         GetIconInfo(hicon, &mut info).ok()?;
 
+        let size = if size_hint > 0 {
+            size_hint
+        } else {
+            let mut bmp = BITMAP::default();
+            let hb = if !info.hbmColor.is_invalid() {
+                info.hbmColor
+            } else {
+                info.hbmMask
+            };
+            if GetObjectW(
+                hb.into(),
+                std::mem::size_of::<BITMAP>() as i32,
+                Some(&mut bmp as *mut _ as *mut _),
+            ) == 0
+            {
+                let _ = DeleteObject(info.hbmColor.into());
+                let _ = DeleteObject(info.hbmMask.into());
+                return None;
+            }
+            // Mask-only icons store AND+XOR stacked → height is 2×
+            let h = if info.hbmColor.is_invalid() {
+                bmp.bmHeight.abs() / 2
+            } else {
+                bmp.bmHeight.abs()
+            };
+            bmp.bmWidth.max(h).max(16)
+        };
+
         let hdc_screen = GetDC(Some(HWND::default()));
         if hdc_screen.is_invalid() {
+            if !info.hbmColor.is_invalid() {
+                let _ = DeleteObject(info.hbmColor.into());
+            }
+            if !info.hbmMask.is_invalid() {
+                let _ = DeleteObject(info.hbmMask.into());
+            }
             return None;
         }
         let hdc = CreateCompatibleDC(Some(hdc_screen));
@@ -516,6 +641,7 @@ fn trim_icon_padding(pixels: &[u8], width: u32, height: u32) -> (Vec<u8>, u32, u
 }
 
 /// Upscale tiny icons (16/32/48) so tiles don't show a speck.
+/// Uses Lanczos3 — much cleaner than GDI DrawIconEx stretch.
 #[cfg(windows)]
 fn upscale_if_small(
     pixels: &[u8],
@@ -528,15 +654,14 @@ fn upscale_if_small(
         return (pixels.to_vec(), width, height);
     }
 
-    let scale = (min_edge as f32 / edge as f32).ceil() as u32;
-    let scale = scale.max(2);
-    let nw = width * scale;
-    let nh = height * scale;
+    let scale = min_edge as f32 / edge as f32;
+    let nw = ((width as f32) * scale).round().max(1.0) as u32;
+    let nh = ((height as f32) * scale).round().max(1.0) as u32;
 
     let Some(img) = image::RgbaImage::from_raw(width, height, pixels.to_vec()) else {
         return (pixels.to_vec(), width, height);
     };
-    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::CatmullRom);
+    let resized = image::imageops::resize(&img, nw, nh, image::imageops::FilterType::Lanczos3);
     (resized.into_raw(), nw, nh)
 }
 
@@ -554,8 +679,84 @@ fn rgba_to_png(pixels: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
     Some(png_bytes)
 }
 
+/// Icon file + index from a .lnk (often different from the launch target).
 #[cfg(windows)]
-fn resolve_shortcut_target(path: &str) -> Option<String> {
+fn shortcut_icon_location(path: &str) -> Option<(String, i32)> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows::core::{Interface, PCWSTR};
+    use windows::Win32::System::Com::{
+        CoCreateInstance, CoInitializeEx, CLSCTX_INPROC_SERVER, COINIT_APARTMENTTHREADED,
+        IPersistFile,
+    };
+    use windows::Win32::UI::Shell::{IShellLinkW, ShellLink};
+
+    let ext = Path::new(path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_lowercase());
+    if ext.as_deref() != Some("lnk") {
+        return None;
+    }
+
+    unsafe {
+        let _ = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        let link: IShellLinkW = CoCreateInstance(&ShellLink, None, CLSCTX_INPROC_SERVER).ok()?;
+        let persist: IPersistFile = link.cast().ok()?;
+        let wide: Vec<u16> = std::ffi::OsStr::new(path)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+        persist.Load(PCWSTR(wide.as_ptr()), Default::default()).ok()?;
+
+        let mut buf = vec![0u16; 260];
+        let mut icon_index = 0i32;
+        link.GetIconLocation(&mut buf, &mut icon_index).ok()?;
+        let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+        let icon_path = String::from_utf16_lossy(&buf[..len]);
+        if icon_path.is_empty() {
+            return None;
+        }
+        // Expand env vars like %SystemRoot%\...
+        let expanded = expand_env_path(&icon_path);
+        if Path::new(&expanded).exists() {
+            Some((expanded, icon_index))
+        } else if Path::new(&icon_path).exists() {
+            Some((icon_path, icon_index))
+        } else {
+            None
+        }
+    }
+}
+
+#[cfg(windows)]
+fn expand_env_path(path: &str) -> String {
+    use std::os::windows::ffi::{OsStrExt, OsStringExt};
+    use windows::core::PCWSTR;
+    use windows::Win32::System::Environment::ExpandEnvironmentStringsW;
+
+    let wide: Vec<u16> = std::ffi::OsStr::new(path)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    unsafe {
+        let needed = ExpandEnvironmentStringsW(PCWSTR(wide.as_ptr()), None);
+        if needed == 0 {
+            return path.to_string();
+        }
+        let mut out = vec![0u16; needed as usize];
+        let written = ExpandEnvironmentStringsW(PCWSTR(wide.as_ptr()), Some(&mut out));
+        if written == 0 {
+            return path.to_string();
+        }
+        let len = out.iter().position(|&c| c == 0).unwrap_or((written as usize).saturating_sub(1));
+        std::ffi::OsString::from_wide(&out[..len])
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn resolve_shortcut_target(path: &str) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
     use windows::core::{Interface, PCWSTR};
     use windows::Win32::System::Com::{

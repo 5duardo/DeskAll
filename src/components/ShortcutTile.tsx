@@ -4,7 +4,7 @@ import {
   Folder,
   Gamepad2,
   Globe,
-} from "lucide-react";
+} from "./icons";
 import type { ItemKind, ShortcutItem } from "../types";
 import { KIND_LABELS } from "../types";
 import { formatUsage } from "../lib/usage";
@@ -104,7 +104,16 @@ export function ShortcutTile({
         ].join(" ")}
       >
         {item.iconDataUrl ? (
-          <FitIcon src={item.iconDataUrl} className="size-16" />
+          item.iconCustom ? (
+            <img
+              src={item.iconDataUrl}
+              alt=""
+              className="size-16 object-contain drop-shadow-md"
+              draggable={false}
+            />
+          ) : (
+            <FitIcon src={item.iconDataUrl} className="size-16" size={192} />
+          )
         ) : (
           <span
             className="grid size-14 place-items-center rounded-2xl text-white"

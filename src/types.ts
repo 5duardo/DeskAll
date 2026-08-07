@@ -11,6 +11,8 @@ export interface ShortcutItem {
   onDesktop?: boolean;
   /** Extracted system icon as PNG data URL */
   iconDataUrl?: string | null;
+  /** User-chosen icon (online/upload/file pick) — do not re-extract on boot */
+  iconCustom?: boolean;
   /** Total tracked usage time in milliseconds */
   usageMs?: number;
   /** How many times it was launched from DeskAll */
@@ -55,7 +57,45 @@ export interface PathInfo {
   onDesktop: boolean;
 }
 
-export type ViewMode = "desktop" | "clipboard" | "settings";
+export type ViewMode = "desktop" | "clipboard" | "pcinfo" | "settings";
+
+export interface CpuInfo {
+  brand: string;
+  frequencyMhz: number;
+  physicalCores: number | null;
+  logicalCores: number;
+  usage: number;
+}
+
+export interface MemoryInfo {
+  totalBytes: number;
+  usedBytes: number;
+  availableBytes: number;
+  swapTotalBytes: number;
+  swapUsedBytes: number;
+}
+
+export interface DiskInfo {
+  name: string;
+  mountPoint: string;
+  fileSystem: string;
+  totalBytes: number;
+  availableBytes: number;
+  isRemovable: boolean;
+}
+
+export interface SystemInfo {
+  hostname: string;
+  osName: string;
+  osVersion: string;
+  kernelVersion: string;
+  arch: string;
+  uptimeSecs: number;
+  bootTimeSecs: number;
+  cpu: CpuInfo;
+  memory: MemoryInfo;
+  disks: DiskInfo[];
+}
 
 export type ThemeMode = "light" | "dark" | "system";
 

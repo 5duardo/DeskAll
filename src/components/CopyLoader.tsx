@@ -1,5 +1,5 @@
 import { createPortal } from "react-dom";
-import { FolderOpen } from "lucide-react";
+import { FolderOpen } from "./icons";
 
 interface Props {
   label?: string;

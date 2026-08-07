@@ -1,28 +1,30 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   ArrowUpCircle,
   CheckCircle2,
-  Clock3,
+  Download,
   ExternalLink,
-  Info,
+  HardDriveDownload,
   LoaderCircle,
   Monitor,
   Moon,
   RefreshCw,
-  RotateCcw,
   Sun,
-} from "lucide-react";
+  Upload,
+} from "./icons";
 import { getVersion } from "@tauri-apps/api/app";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { LazyStore } from "@tauri-apps/plugin-store";
-import type { ShortcutItem, ThemeMode } from "../types";
-import { KIND_LABELS } from "../types";
+import type { ClipboardEntry, ShortcutItem, ThemeMode } from "../types";
 import { btnGhost, btnPrimary } from "../lib/ui";
-import { formatUsage } from "../lib/usage";
-import { FitIcon } from "./FitIcon";
+import { backupFileName, buildBackup, parseBackup } from "../lib/backup";
+import { readTextFile, writeTextFile } from "../lib/tauri";
 import {
   checkForUpdates,
   DEFAULT_GITHUB_REPO,
+  GITHUB_RELEASES_URL,
+  GITHUB_REPO_URL,
   type UpdateCheckResult,
 } from "../lib/updates";
 
@@ -32,7 +34,9 @@ interface Props {
   theme: ThemeMode;
   onThemeChange: (mode: ThemeMode) => void;
   items: ShortcutItem[];
-  onResetUsage: (id?: string) => void;
+  clipboardEntries: ClipboardEntry[];
+  onRestoreShortcuts: (items: ShortcutItem[]) => Promise<void>;
+  onRestoreClipboard: (entries: ClipboardEntry[]) => Promise<void>;
 }
 
 const OPTIONS: {
@@ -41,56 +45,46 @@ const OPTIONS: {
   hint: string;
   icon: typeof Sun;
 }[] = [
-  { id: "light", label: "Claro", hint: "Fondo claro y contraste suave", icon: Sun },
-  { id: "dark", label: "Oscuro", hint: "Ideal de noche o con poca luz", icon: Moon },
-  {
-    id: "system",
-    label: "Sistema",
-    hint: "Sigue el tema de Windows / macOS",
-    icon: Monitor,
-  },
+  { id: "light", label: "Claro", hint: "Fondo claro", icon: Sun },
+  { id: "dark", label: "Oscuro", hint: "Poca luz", icon: Moon },
+  { id: "system", label: "Sistema", hint: "Windows / macOS", icon: Monitor },
 ];
 
 export function SettingsView({
   theme,
   onThemeChange,
   items,
-  onResetUsage,
+  clipboardEntries,
+  onRestoreShortcuts,
+  onRestoreClipboard,
 }: Props) {
   const [version, setVersion] = useState("…");
   const [repo, setRepo] = useState(DEFAULT_GITHUB_REPO);
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<UpdateCheckResult | null>(null);
-
-  const ranked = useMemo(
-    () =>
-      [...items]
-        .filter((i) => (i.usageMs ?? 0) > 0 || (i.launchCount ?? 0) > 0)
-        .sort(
-          (a, b) =>
-            (b.usageMs ?? 0) - (a.usageMs ?? 0) ||
-            (b.launchCount ?? 0) - (a.launchCount ?? 0),
-        )
-        .slice(0, 8),
-    [items],
+  const [backupBusy, setBackupBusy] = useState<"export" | "import" | null>(
+    null,
   );
-
-  const totalUsage = useMemo(
-    () => items.reduce((acc, i) => acc + (i.usageMs ?? 0), 0),
-    [items],
-  );
+  const [backupMsg, setBackupMsg] = useState<string | null>(null);
 
   useEffect(() => {
     void getVersion().then(setVersion).catch(() => setVersion("0.1.0"));
     void (async () => {
       const saved = await store.get<string>("githubRepo");
-      if (saved?.trim()) setRepo(saved.trim());
+      if (!saved?.trim() || saved.trim().toLowerCase() === "eduar/deskall") {
+        setRepo(DEFAULT_GITHUB_REPO);
+        await store.set("githubRepo", DEFAULT_GITHUB_REPO);
+        await store.save();
+      } else {
+        setRepo(saved.trim());
+      }
     })();
   }, []);
 
   async function saveRepo(next: string) {
-    setRepo(next);
-    await store.set("githubRepo", next.trim());
+    const clean = next.trim() || DEFAULT_GITHUB_REPO;
+    setRepo(clean);
+    await store.set("githubRepo", clean);
     await store.save();
   }
 
@@ -104,19 +98,86 @@ export function SettingsView({
     setChecking(false);
   }
 
+  async function exportBackup() {
+    setBackupBusy("export");
+    setBackupMsg(null);
+    try {
+      const path = await save({
+        title: "Guardar copia de seguridad de DeskAll",
+        defaultPath: backupFileName(),
+        filters: [{ name: "Copia DeskAll", extensions: ["json"] }],
+      });
+      if (typeof path !== "string") return;
+
+      const backup = buildBackup({
+        shortcuts: items,
+        clipboard: clipboardEntries,
+        theme,
+        githubRepo: repo.trim() || DEFAULT_GITHUB_REPO,
+        appVersion: version,
+      });
+      await writeTextFile(path, JSON.stringify(backup, null, 2));
+      setBackupMsg(
+        `Copia guardada (${items.length} accesos, ${clipboardEntries.length} clipboard).`,
+      );
+    } catch (err) {
+      setBackupMsg(String(err));
+    } finally {
+      setBackupBusy(null);
+    }
+  }
+
+  async function importBackup() {
+    setBackupBusy("import");
+    setBackupMsg(null);
+    try {
+      const path = await open({
+        title: "Restaurar copia de DeskAll",
+        multiple: false,
+        filters: [{ name: "Copia DeskAll", extensions: ["json"] }],
+      });
+      if (typeof path !== "string") return;
+
+      const raw = await readTextFile(path);
+      const backup = parseBackup(raw);
+
+      await onRestoreShortcuts(backup.data.shortcuts);
+      if (backup.data.clipboard) {
+        await onRestoreClipboard(backup.data.clipboard);
+      }
+      if (backup.data.theme) {
+        await onThemeChange(backup.data.theme);
+      }
+      if (backup.data.githubRepo?.trim()) {
+        await saveRepo(backup.data.githubRepo);
+      }
+
+      setBackupMsg(
+        `Restaurado: ${backup.data.shortcuts.length} accesos` +
+          (backup.data.clipboard
+            ? `, ${backup.data.clipboard.length} clipboard`
+            : "") +
+          ".",
+      );
+    } catch (err) {
+      setBackupMsg(String(err));
+    } finally {
+      setBackupBusy(null);
+    }
+  }
+
   return (
     <section className="relative flex h-full flex-col gap-5 overflow-auto pb-4 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
       <header>
         <h1 className="m-0 font-display text-2xl tracking-tight">Ajustes</h1>
         <p className="mt-1 text-sm text-muted">
-          Apariencia y actualizaciones de DeskAll.
+          Tema, copia de seguridad y actualizaciones · v{version}
         </p>
       </header>
 
       <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
         <h2 className="m-0 font-display text-lg tracking-tight">Apariencia</h2>
-        <p className="mt-1 mb-4 text-sm text-muted">Modo claro u oscuro</p>
-        <div className="grid gap-2 sm:grid-cols-3">
+        <div className="mt-4 grid gap-2 sm:grid-cols-3">
           {OPTIONS.map(({ id, label, hint, icon: Icon }) => {
             const on = theme === id;
             return (
@@ -144,69 +205,49 @@ export function SettingsView({
         <div className="flex items-start justify-between gap-3">
           <div>
             <h2 className="m-0 font-display text-lg tracking-tight">
-              Tiempo de uso
+              Copia de seguridad
             </h2>
             <p className="mt-1 text-sm text-muted">
-              Se cuenta desde que abres un acceso hasta que vuelves a DeskAll ·{" "}
-              {formatUsage(totalUsage)} en total
+              Escritorio, clipboard y ajustes en un JSON.
             </p>
           </div>
-          <Clock3 className="size-5 shrink-0 text-accent" strokeWidth={1.8} />
+          <HardDriveDownload
+            className="size-5 shrink-0 text-accent"
+            strokeWidth={1.8}
+          />
         </div>
-
-        {ranked.length === 0 ? (
-          <p className="mt-4 m-0 text-sm text-muted">
-            Aún no hay uso registrado. Abre apps o juegos desde DeskAll.
-          </p>
-        ) : (
-          <ul className="mt-4 m-0 flex list-none flex-col gap-2 p-0">
-            {ranked.map((item, idx) => (
-              <li
-                key={item.id}
-                className="flex items-center gap-3 rounded-xl border border-line bg-paper/50 px-3 py-2.5"
-              >
-                <span className="grid size-7 place-items-center rounded-lg bg-accent-soft text-xs font-semibold text-accent-deep">
-                  {idx + 1}
-                </span>
-                {item.iconDataUrl ? (
-                  <FitIcon src={item.iconDataUrl} className="size-8" size={64} />
-                ) : (
-                  <span
-                    className="size-8 rounded-lg"
-                    style={{ background: item.color }}
-                  />
-                )}
-                <div className="min-w-0 flex-1">
-                  <p className="m-0 truncate text-sm font-medium">{item.name}</p>
-                  <p className="m-0 text-xs text-muted">
-                    {KIND_LABELS[item.kind]} · {item.launchCount ?? 0} aperturas
-                  </p>
-                </div>
-                <span className="shrink-0 text-sm font-semibold tabular-nums">
-                  {formatUsage(item.usageMs ?? 0)}
-                </span>
-                <button
-                  type="button"
-                  className="grid size-8 cursor-pointer place-items-center rounded-lg border-0 bg-transparent text-muted hover:bg-accent-soft hover:text-ink"
-                  title="Reiniciar uso"
-                  onClick={() => onResetUsage(item.id)}
-                >
-                  <RotateCcw className="size-3.5" strokeWidth={1.8} />
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {ranked.length > 0 && (
+        <div className="mt-4 flex flex-wrap gap-2">
           <button
             type="button"
-            className={`${btnGhost} mt-4`}
-            onClick={() => onResetUsage()}
+            className={btnPrimary}
+            disabled={backupBusy !== null}
+            onClick={() => void exportBackup()}
           >
-            <RotateCcw className="size-4" strokeWidth={1.8} />
-            Reiniciar todo el uso
+            {backupBusy === "export" ? (
+              <LoaderCircle className="size-4 animate-spin" strokeWidth={1.8} />
+            ) : (
+              <Download className="size-4" strokeWidth={1.8} />
+            )}
+            Guardar copia
           </button>
+          <button
+            type="button"
+            className={btnGhost}
+            disabled={backupBusy !== null}
+            onClick={() => void importBackup()}
+          >
+            {backupBusy === "import" ? (
+              <LoaderCircle className="size-4 animate-spin" strokeWidth={1.8} />
+            ) : (
+              <Upload className="size-4" strokeWidth={1.8} />
+            )}
+            Restaurar
+          </button>
+        </div>
+        {backupMsg && (
+          <p className="mt-3 m-0 rounded-xl border border-line bg-paper/70 px-3 py-2.5 text-sm text-ink-soft">
+            {backupMsg}
+          </p>
         )}
       </div>
 
@@ -217,23 +258,17 @@ export function SettingsView({
               Actualizaciones
             </h2>
             <p className="mt-1 text-sm text-muted">
-              Busca nuevas versiones en GitHub Releases · v{version}
+              <button
+                type="button"
+                className="cursor-pointer border-0 bg-transparent p-0 text-accent underline-offset-2 hover:underline"
+                onClick={() => void openUrl(GITHUB_REPO_URL)}
+              >
+                {DEFAULT_GITHUB_REPO}
+              </button>
             </p>
           </div>
           <ArrowUpCircle className="size-5 shrink-0 text-accent" strokeWidth={1.8} />
         </div>
-
-        <label className="mt-4 flex flex-col gap-1.5">
-          <span className="text-sm text-muted">Repositorio GitHub</span>
-          <input
-            className="rounded-xl border border-line bg-paper px-3 py-2.5 outline-none focus:border-accent/45 focus:shadow-[0_0_0_3px_var(--color-accent-soft)]"
-            value={repo}
-            onChange={(e) => setRepo(e.target.value)}
-            onBlur={() => void saveRepo(repo)}
-            placeholder="owner/repo"
-            spellCheck={false}
-          />
-        </label>
 
         <div className="mt-4 flex flex-wrap items-center gap-2">
           <button
@@ -249,6 +284,14 @@ export function SettingsView({
             )}
             {checking ? "Buscando…" : "Buscar actualizaciones"}
           </button>
+          <button
+            type="button"
+            className={btnGhost}
+            onClick={() => void openUrl(GITHUB_RELEASES_URL)}
+          >
+            <ExternalLink className="size-4" strokeWidth={1.8} />
+            Releases
+          </button>
           {result?.status === "available" && (
             <button
               type="button"
@@ -256,7 +299,7 @@ export function SettingsView({
               onClick={() => void openUrl(result.release.htmlUrl)}
             >
               <ExternalLink className="size-4" strokeWidth={1.8} />
-              Ver release
+              Descargar {result.latest}
             </button>
           )}
         </div>
@@ -299,19 +342,6 @@ export function SettingsView({
             )}
           </div>
         )}
-      </div>
-
-      <div className="rounded-[18px] border border-line bg-surface p-5">
-        <div className="flex items-start gap-3">
-          <Info className="mt-0.5 size-5 shrink-0 text-accent" strokeWidth={1.8} />
-          <div>
-            <h2 className="m-0 font-display text-lg tracking-tight">Librería</h2>
-            <p className="mt-1 text-sm leading-relaxed text-muted">
-              Al agregar apps, archivos o carpetas, DeskAll guarda una copia en
-              su librería interna y deja de depender del Escritorio.
-            </p>
-          </div>
-        </div>
       </div>
     </section>
   );

@@ -9,7 +9,7 @@ import {
   Trash2,
   Type,
   X,
-} from "lucide-react";
+} from "./icons";
 import type { ClipboardEntry } from "../types";
 import {
   formatTime,

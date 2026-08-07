@@ -1,5 +1,8 @@
 mod icons;
 mod installed;
+mod process;
+mod system_info;
+mod game_covers;
 
 use serde::Serialize;
 use std::fs;
@@ -316,6 +319,105 @@ fn get_library_dir(app: tauri::AppHandle) -> Result<String, String> {
     library_dir(&app).map(|p| p.to_string_lossy().into_owned())
 }
 
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DirEntryInfo {
+    name: String,
+    path: String,
+    is_dir: bool,
+    size: u64,
+    modified_ms: Option<u64>,
+    extension: Option<String>,
+}
+
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct KnownFolder {
+    id: String,
+    label: String,
+    path: String,
+}
+
+/// Quick-access folders for the Archivos explorer.
+#[tauri::command]
+fn list_known_folders(app: tauri::AppHandle) -> Vec<KnownFolder> {
+    let mut out = Vec::new();
+    let push = |out: &mut Vec<KnownFolder>, id: &str, label: &str, path: Option<PathBuf>| {
+        if let Some(p) = path {
+            if p.is_dir() {
+                out.push(KnownFolder {
+                    id: id.into(),
+                    label: label.into(),
+                    path: p.to_string_lossy().into_owned(),
+                });
+            }
+        }
+    };
+    push(&mut out, "home", "Inicio", dirs::home_dir());
+    push(&mut out, "desktop", "Escritorio", dirs::desktop_dir());
+    push(&mut out, "documents", "Documentos", dirs::document_dir());
+    push(&mut out, "downloads", "Descargas", dirs::download_dir());
+    push(&mut out, "pictures", "Imágenes", dirs::picture_dir());
+    push(&mut out, "music", "Música", dirs::audio_dir());
+    push(&mut out, "videos", "Vídeos", dirs::video_dir());
+    if let Ok(lib) = library_dir(&app) {
+        out.push(KnownFolder {
+            id: "library".into(),
+            label: "Librería DeskAll".into(),
+            path: lib.to_string_lossy().into_owned(),
+        });
+    }
+    out
+}
+
+/// List files and folders in a directory (explorer-style).
+#[tauri::command]
+fn list_directory(path: String) -> Result<Vec<DirEntryInfo>, String> {
+    let dir = Path::new(&path);
+    if !dir.is_dir() {
+        return Err("La ruta no es una carpeta".into());
+    }
+    let mut entries = Vec::new();
+    let rd = fs::read_dir(dir).map_err(|e| format!("No se pudo leer la carpeta: {e}"))?;
+    for entry in rd.flatten() {
+        let p = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        // Skip hidden / system noise on Windows
+        if name.starts_with('.') || name.eq_ignore_ascii_case("desktop.ini") {
+            continue;
+        }
+        let meta = entry.metadata().ok();
+        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(p.is_dir());
+        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
+        let modified_ms = meta
+            .as_ref()
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_millis() as u64);
+        let extension = if is_dir {
+            None
+        } else {
+            p.extension()
+                .and_then(|e| e.to_str())
+                .map(|e| e.to_lowercase())
+        };
+        entries.push(DirEntryInfo {
+            name,
+            path: p.to_string_lossy().into_owned(),
+            is_dir,
+            size,
+            modified_ms,
+            extension,
+        });
+    }
+    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
+        (true, false) => std::cmp::Ordering::Less,
+        (false, true) => std::cmp::Ordering::Greater,
+        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+    });
+    Ok(entries)
+}
+
 fn open_with_shell(target: &str) -> Result<(), String> {
     #[cfg(windows)]
     {
@@ -508,6 +610,19 @@ fn reveal_item(path: String) -> Result<(), String> {
 }
 
 #[tauri::command]
+fn write_text_file(path: String, contents: String) -> Result<(), String> {
+    if let Some(parent) = Path::new(&path).parent() {
+        fs::create_dir_all(parent).map_err(|e| format!("No se pudo crear carpeta: {e}"))?;
+    }
+    fs::write(&path, contents).map_err(|e| format!("No se pudo guardar: {e}"))
+}
+
+#[tauri::command]
+fn read_text_file(path: String) -> Result<String, String> {
+    fs::read_to_string(&path).map_err(|e| format!("No se pudo leer: {e}"))
+}
+
+#[tauri::command]
 async fn list_installed_apps() -> Result<Vec<installed::InstalledApp>, String> {
     tauri::async_runtime::spawn_blocking(installed::list_installed_apps)
         .await
@@ -532,6 +647,34 @@ fn scan_installed_apps(on_event: tauri::ipc::Channel<InstalledScanEvent>) {
     });
 }
 
+/// Returns which of the given shortcut paths currently have a running process.
+#[tauri::command]
+fn which_are_running(paths: Vec<String>) -> Vec<String> {
+    process::which_are_running(paths)
+}
+
+/// Snapshot of hostname, OS, CPU, RAM and disks.
+#[tauri::command]
+fn get_system_info() -> system_info::SystemInfo {
+    system_info::collect()
+}
+
+/// Wikipedia cover art for games/apps (works for Epic-only titles like Rocket League).
+#[tauri::command]
+fn search_game_covers(query: String, limit: Option<u32>, prefer_game: Option<bool>) -> Vec<game_covers::GameCover> {
+    game_covers::search_covers(
+        &query,
+        limit.unwrap_or(12) as usize,
+        prefer_game.unwrap_or(true),
+    )
+}
+
+/// Download a remote image as a square PNG data URL (avoids browser CORS).
+#[tauri::command]
+fn fetch_remote_image_png(url: String, size: Option<u32>) -> Result<String, String> {
+    game_covers::fetch_image_png_data_url(&url, size.unwrap_or(192))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -551,9 +694,17 @@ pub fn run() {
             move_desktop_to_library,
             import_to_library,
             get_library_dir,
+            list_known_folders,
+            list_directory,
             list_installed_apps,
             scan_installed_apps,
+            write_text_file,
+            read_text_file,
             launch_item,
+            which_are_running,
+            get_system_info,
+            search_game_covers,
+            fetch_remote_image_png,
             reveal_item,
             get_clipboard_store_path,
             get_clipboard_kind_dir,

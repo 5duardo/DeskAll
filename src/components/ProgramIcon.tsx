@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { AppWindow } from "lucide-react";
+import { AppWindow } from "./icons";
 import { extractFileIcon } from "../lib/tauri";
 import { fitIconDataUrl } from "../lib/fitIcon";
 
-const CACHE_VER = "fit-v3";
+const CACHE_VER = "fit-v4";
 
 /** path → fitted data URL (or null) */
 const cache = new Map<string, string | null>();
@@ -49,7 +49,7 @@ function pump() {
           return;
         }
         try {
-          const fitted = await fitIconDataUrl(icon, 96);
+          const fitted = await fitIconDataUrl(icon, 192);
           cache.set(key, fitted);
           job.resolve(fitted);
         } catch {

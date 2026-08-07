@@ -1,5 +1,7 @@
-/** Default GitHub repo for release checks (owner/name). Editable in Ajustes. */
-export const DEFAULT_GITHUB_REPO = "eduar/DeskAll";
+/** Default GitHub repo for release checks (owner/name). */
+export const DEFAULT_GITHUB_REPO = "5duardo/DeskAll";
+export const GITHUB_REPO_URL = "https://github.com/5duardo/DeskAll";
+export const GITHUB_RELEASES_URL = "https://github.com/5duardo/DeskAll/releases";
 
 export interface GithubRelease {
   tagName: string;

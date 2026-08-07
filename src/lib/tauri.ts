@@ -1,5 +1,5 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
-import type { ClipboardKind, PathInfo } from "../types";
+import type { ClipboardKind, PathInfo, SystemInfo } from "../types";
 
 export async function getPathInfo(path: string): Promise<PathInfo> {
   return invoke<PathInfo>("get_path_info", { path });
@@ -45,6 +45,29 @@ export async function getLibraryDir(): Promise<string> {
   return invoke<string>("get_library_dir");
 }
 
+export type DirEntryInfo = {
+  name: string;
+  path: string;
+  isDir: boolean;
+  size: number;
+  modifiedMs: number | null;
+  extension: string | null;
+};
+
+export type KnownFolder = {
+  id: string;
+  label: string;
+  path: string;
+};
+
+export async function listKnownFolders(): Promise<KnownFolder[]> {
+  return invoke<KnownFolder[]>("list_known_folders");
+}
+
+export async function listDirectory(path: string): Promise<DirEntryInfo[]> {
+  return invoke<DirEntryInfo[]>("list_directory", { path });
+}
+
 export interface InstalledApp {
   name: string;
   path: string;
@@ -81,6 +104,12 @@ export async function scanInstalledApps(
 
 export async function launchItem(target: string): Promise<void> {
   await invoke("launch_item", { target });
+}
+
+/** Subset of paths whose resolved exe is currently running. */
+export async function whichAreRunning(paths: string[]): Promise<string[]> {
+  if (paths.length === 0) return [];
+  return invoke<string[]>("which_are_running", { paths });
 }
 
 export async function revealItem(path: string): Promise<void> {
@@ -142,9 +171,50 @@ export async function extractFileIcon(path: string): Promise<string | null> {
   return invoke<string | null>("extract_file_icon", { path });
 }
 
+export async function getSystemInfo(): Promise<SystemInfo> {
+  return invoke<SystemInfo>("get_system_info");
+}
+
+export type GameCoverResult = {
+  id: string;
+  label: string;
+  previewUrl: string;
+  fetchUrl: string;
+  source: string;
+};
+
+/** Wikipedia covers (Epic-only games like Rocket League work here). */
+export async function searchGameCovers(
+  query: string,
+  limit = 12,
+  preferGame = true,
+): Promise<GameCoverResult[]> {
+  return invoke<GameCoverResult[]>("search_game_covers", {
+    query,
+    limit,
+    preferGame,
+  });
+}
+
+/** Download remote image as square PNG data URL (no CORS issues). */
+export async function fetchRemoteImagePng(
+  url: string,
+  size = 192,
+): Promise<string> {
+  return invoke<string>("fetch_remote_image_png", { url, size });
+}
+
 /** All icon resources embedded in an exe/lnk/dll. */
 export async function listFileIcons(path: string): Promise<string[]> {
   return invoke<string[]>("list_file_icons", { path });
+}
+
+export async function writeTextFile(path: string, contents: string): Promise<void> {
+  await invoke("write_text_file", { path, contents });
+}
+
+export async function readTextFile(path: string): Promise<string> {
+  return invoke<string>("read_text_file", { path });
 }
 
 export function createId(): string {

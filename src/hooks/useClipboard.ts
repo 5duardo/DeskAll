@@ -304,6 +304,13 @@ export function useClipboardHistory() {
     await purgeFiles(dropped);
   }, [entries, persist]);
 
+  const replaceAll = useCallback(
+    async (next: ClipboardEntry[]) => {
+      await persist(next);
+    },
+    [persist],
+  );
+
   return {
     entries,
     ready,
@@ -313,5 +320,6 @@ export function useClipboardHistory() {
     togglePin,
     remove,
     clearUnpinned,
+    replaceAll,
   };
 }

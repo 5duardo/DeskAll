@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { LazyStore } from "@tauri-apps/plugin-store";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ItemKind, ShortcutItem } from "../types";
 import { ACCENT_COLORS } from "../types";
 import {
@@ -9,8 +8,9 @@ import {
   getLibraryDir,
   getPathInfo,
   importToLibrary,
+  whichAreRunning,
 } from "../lib/tauri";
-import { fitIconDataUrl } from "../lib/fitIcon";
+import { fitIconDataUrl, prepareCustomAvatar } from "../lib/fitIcon";
 
 const store = new LazyStore("deskall.json");
 
@@ -38,6 +38,15 @@ function inLibrary(path: string, libraryDir: string) {
   return a === b || a.startsWith(`${b}\\`);
 }
 
+function isLaunchable(item: ShortcutItem) {
+  if (item.isGroup) return false;
+  if (item.kind === "folder" || item.kind === "url" || item.kind === "file") {
+    return false;
+  }
+  if (!item.path || isHttpUrl(item.path)) return false;
+  return true;
+}
+
 type ActiveSession = {
   id: string;
   /** Wall-clock when current unflushed segment started */
@@ -49,11 +58,14 @@ export function useShortcuts() {
   const [ready, setReady] = useState(false);
   const [copying, setCopying] = useState<string | null>(null);
   const [activeUsageId, setActiveUsageId] = useState<string | null>(null);
+  const [runningIds, setRunningIds] = useState<string[]>([]);
   const [activeSegmentStart, setActiveSegmentStart] = useState<number | null>(
     null,
   );
   const sessionRef = useRef<ActiveSession | null>(null);
   const itemsRef = useRef<ShortcutItem[]>([]);
+  /** Grace window after launch before process must be visible */
+  const launchGraceRef = useRef<Map<string, number>>(new Map());
 
   useEffect(() => {
     itemsRef.current = items;
@@ -114,6 +126,8 @@ export function useShortcuts() {
       sessionRef.current = { id, segmentStart: now };
       setActiveUsageId(id);
       setActiveSegmentStart(now);
+      launchGraceRef.current.set(id, now + 12_000);
+      setRunningIds((prev) => (prev.includes(id) ? prev : [...prev, id]));
 
       const next = itemsRef.current.map((i) =>
         i.id === id
@@ -138,31 +152,73 @@ export function useShortcuts() {
     return () => window.clearInterval(id);
   }, [activeUsageId, flushSession]);
 
-  // End session when DeskAll regains focus after being away (user came back)
+  // Poll OS processes to mark open apps / games
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    let blurredAt: number | null = null;
+    let cancelled = false;
+    let timer: number | undefined;
 
-    void getCurrentWindow()
-      .onFocusChanged(({ payload: focused }) => {
-        if (!focused) {
-          blurredAt = Date.now();
-          return;
+    const poll = async () => {
+      const list = itemsRef.current.filter(isLaunchable);
+      const pathToIds = new Map<string, string[]>();
+      for (const item of list) {
+        const key = item.path;
+        const ids = pathToIds.get(key);
+        if (ids) ids.push(item.id);
+        else pathToIds.set(key, [item.id]);
+      }
+
+      let runningPaths: string[] = [];
+      try {
+        runningPaths = await whichAreRunning([...pathToIds.keys()]);
+      } catch {
+        runningPaths = [];
+      }
+      if (cancelled) return;
+
+      const now = Date.now();
+      const detected = new Set<string>();
+      for (const path of runningPaths) {
+        for (const id of pathToIds.get(path) ?? []) {
+          detected.add(id);
         }
-        if (blurredAt && Date.now() - blurredAt > 1500) {
+      }
+
+      // Keep recently launched items visible while process starts
+      for (const [id, until] of [...launchGraceRef.current.entries()]) {
+        if (until > now) detected.add(id);
+        else launchGraceRef.current.delete(id);
+      }
+
+      const nextIds = [...detected];
+      setRunningIds((prev) => {
+        if (
+          prev.length === nextIds.length &&
+          prev.every((id, i) => id === nextIds[i])
+        ) {
+          return prev;
+        }
+        return nextIds;
+      });
+
+      // End usage session when that process is no longer running
+      const session = sessionRef.current;
+      if (session && !detected.has(session.id)) {
+        const graceUntil = launchGraceRef.current.get(session.id) ?? 0;
+        if (graceUntil <= now) {
           endUsageSession();
         }
-        blurredAt = null;
-      })
-      .then((fn) => {
-        unlisten = fn;
-      });
+      }
+    };
+
+    void poll();
+    timer = window.setInterval(() => void poll(), 2500);
 
     const onUnload = () => endUsageSession();
     window.addEventListener("beforeunload", onUnload);
 
     return () => {
-      unlisten?.();
+      cancelled = true;
+      if (timer) window.clearInterval(timer);
       window.removeEventListener("beforeunload", onUnload);
       endUsageSession();
     };
@@ -215,10 +271,13 @@ export function useShortcuts() {
             info.onDesktop && info.isFile,
           );
           let iconDataUrl = item.iconDataUrl;
-          try {
-            iconDataUrl = await extractFileIcon(libraryPath);
-          } catch {
-            /* keep */
+          if (!item.iconCustom) {
+            try {
+              iconDataUrl =
+                (await extractFittedIcon(libraryPath)) ?? iconDataUrl;
+            } catch {
+              /* keep */
+            }
           }
           next = next.map((i) =>
             i.id === item.id
@@ -245,11 +304,14 @@ export function useShortcuts() {
       let iconChanged = false;
       for (const item of withIcons) {
         if (item.isGroup || item.path.startsWith("deskall://")) continue;
+        if (item.iconCustom && item.iconDataUrl) continue;
         try {
           const icon = await extractFittedIcon(item.path);
           if (icon && icon !== item.iconDataUrl) {
             withIcons = withIcons.map((i) =>
-              i.id === item.id ? { ...i, iconDataUrl: icon } : i,
+              i.id === item.id
+                ? { ...i, iconDataUrl: icon, iconCustom: false }
+                : i,
             );
             iconChanged = true;
             if (!cancelled) setItems([...withIcons]);
@@ -305,24 +367,31 @@ export function useShortcuts() {
           i.path.toLowerCase() === path.toLowerCase(),
       );
       if (existing) {
-        if (existing.path.toLowerCase() !== finalPath.toLowerCase()) {
+        const nextKind =
+          forcedKind &&
+          ["app", "game", "folder", "file", "url"].includes(forcedKind)
+            ? forcedKind
+            : existing.kind;
+        const pathChanged =
+          existing.path.toLowerCase() !== finalPath.toLowerCase();
+        const parentChanged =
+          parentId !== undefined && existing.parentId !== parentId;
+        const kindChanged = nextKind !== existing.kind;
+
+        if (pathChanged || parentChanged || kindChanged) {
           const iconDataUrl =
-            (await extractFittedIcon(finalPath)) ?? existing.iconDataUrl;
+            pathChanged && !existing.iconCustom
+              ? ((await extractFittedIcon(finalPath)) ?? existing.iconDataUrl)
+              : existing.iconDataUrl;
           const updated: ShortcutItem = {
             ...existing,
             path: finalPath,
             onDesktop: false,
             iconDataUrl,
+            kind: nextKind,
             parentId:
               parentId !== undefined ? parentId : (existing.parentId ?? null),
           };
-          await persist(
-            items.map((i) => (i.id === existing.id ? updated : i)),
-          );
-          return updated;
-        }
-        if (parentId !== undefined && existing.parentId !== parentId) {
-          const updated = { ...existing, parentId, onDesktop: false };
           await persist(
             items.map((i) => (i.id === existing.id ? updated : i)),
           );
@@ -429,18 +498,39 @@ export function useShortcuts() {
   );
 
   const setIcon = useCallback(
-    async (id: string, iconDataUrl: string | null) => {
+    async (
+      id: string,
+      iconDataUrl: string | null,
+      options: boolean | { custom?: boolean; avatar?: boolean } = false,
+    ) => {
+      const opts =
+        typeof options === "boolean"
+          ? { custom: options, avatar: options }
+          : {
+              custom: Boolean(options.custom),
+              avatar: Boolean(options.avatar),
+            };
       const items = itemsRef.current;
       let fitted = iconDataUrl;
       if (fitted) {
         try {
-          fitted = await fitIconDataUrl(fitted, 192);
+          fitted = opts.avatar
+            ? await prepareCustomAvatar(fitted, 192)
+            : await fitIconDataUrl(fitted, 192);
         } catch {
           /* keep */
         }
       }
       await persist(
-        items.map((i) => (i.id === id ? { ...i, iconDataUrl: fitted } : i)),
+        items.map((i) =>
+          i.id === id
+            ? {
+                ...i,
+                iconDataUrl: fitted,
+                iconCustom: fitted ? opts.custom : false,
+              }
+            : i,
+        ),
       );
     },
     [persist],
@@ -501,12 +591,21 @@ export function useShortcuts() {
     [persist, endUsageSession],
   );
 
+  const replaceAll = useCallback(
+    async (next: ShortcutItem[]) => {
+      endUsageSession();
+      await persist(next);
+    },
+    [persist, endUsageSession],
+  );
+
   return {
     items,
     ready,
     copying,
     activeUsageId,
     activeSegmentStart,
+    runningIds,
     addFromPath,
     addUrl,
     addGroup,
@@ -519,5 +618,6 @@ export function useShortcuts() {
     startUsageSession,
     endUsageSession,
     resetUsage,
+    replaceAll,
   };
 }

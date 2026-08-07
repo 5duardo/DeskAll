@@ -1,20 +1,23 @@
 import { useEffect, useState } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   Clipboard,
+  Cpu,
   LayoutGrid,
   Settings,
-} from "lucide-react";
+} from "./components/icons";
 import type { ViewMode } from "./types";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { useClipboardHistory } from "./hooks/useClipboard";
 import { useTheme } from "./hooks/useTheme";
 import { DesktopView } from "./components/DesktopView";
 import { ClipboardView } from "./components/ClipboardView";
+import { PcInfoView } from "./components/PcInfoView";
 import { SettingsView } from "./components/SettingsView";
 import { BootLoader } from "./components/BootLoader";
-import { AppLogo } from "./components/AppLogo";
 import { WindowControls } from "./components/WindowControls";
 import { CopyLoader } from "./components/CopyLoader";
+import { hideScrollbar } from "./lib/ui";
 
 const MIN_BOOT_MS = 700;
 
@@ -26,6 +29,10 @@ function App() {
   const { theme, setTheme, ready: themeReady } = useTheme();
 
   const dataReady = shortcuts.ready && clipboard.ready && themeReady;
+
+  useEffect(() => {
+    void getCurrentWindow().maximize().catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (!dataReady) return;
@@ -60,7 +67,6 @@ function App() {
           className="flex min-w-0 flex-1 items-center gap-2 px-3"
           data-tauri-drag-region
         >
-          <AppLogo size="sm" className="pointer-events-none" />
           <span
             className="truncate text-xs font-medium text-muted"
             data-tauri-drag-region
@@ -72,14 +78,11 @@ function App() {
       </header>
 
       <aside className="relative z-1 flex flex-col gap-6 border-b border-line bg-surface/80 px-4 pt-4 pb-3 backdrop-blur-xl md:border-r md:border-b-0 md:pb-4">
-        <div className="flex items-center gap-3.5 px-2 py-1.5" data-tauri-drag-region>
-          <AppLogo size="md" />
-          <div>
-            <p className="font-display text-[1.35rem] leading-tight font-bold tracking-tight">
-              DeskAll
-            </p>
-            <p className="mt-0.5 text-xs text-muted">Launcher + clipboard</p>
-          </div>
+        <div className="px-2 py-1.5" data-tauri-drag-region>
+          <p className="font-display text-[1.35rem] leading-tight font-bold tracking-tight">
+            DeskAll
+          </p>
+          <p className="mt-0.5 text-xs text-muted">Launcher + clipboard</p>
         </div>
 
         <nav className="flex flex-row gap-1.5 md:flex-col" aria-label="Vistas">
@@ -100,6 +103,13 @@ function App() {
             Clipboard
           </NavButton>
           <NavButton
+            active={view === "pcinfo"}
+            onClick={() => setView("pcinfo")}
+            icon={<Cpu className="size-full" strokeWidth={1.8} />}
+          >
+            PC
+          </NavButton>
+          <NavButton
             active={view === "settings"}
             onClick={() => setView("settings")}
             icon={<Settings className="size-full" strokeWidth={1.8} />}
@@ -115,12 +125,18 @@ function App() {
         </footer>
       </aside>
 
-      <main className="relative z-1 min-w-0 overflow-auto p-4 md:p-5">
+      <main
+        className={[
+          "relative z-1 min-w-0 overflow-auto p-4 md:p-5",
+          view === "desktop" ? hideScrollbar : "",
+        ].join(" ")}
+      >
         {view === "desktop" ? (
           <DesktopView
             items={shortcuts.items}
             activeUsageId={shortcuts.activeUsageId}
             activeSegmentStart={shortcuts.activeSegmentStart}
+            runningIds={shortcuts.runningIds}
             onAddPath={shortcuts.addFromPath}
             onAddUrl={shortcuts.addUrl}
             onAddGroup={shortcuts.addGroup}
@@ -142,12 +158,16 @@ function App() {
             onRemove={clipboard.remove}
             onClear={clipboard.clearUnpinned}
           />
+        ) : view === "pcinfo" ? (
+          <PcInfoView />
         ) : (
           <SettingsView
             theme={theme}
             onThemeChange={(m) => void setTheme(m)}
             items={shortcuts.items}
-            onResetUsage={(id) => void shortcuts.resetUsage(id)}
+            clipboardEntries={clipboard.entries}
+            onRestoreShortcuts={shortcuts.replaceAll}
+            onRestoreClipboard={clipboard.replaceAll}
           />
         )}
       </main>

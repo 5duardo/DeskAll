@@ -1,6 +1,15 @@
 /** Cache trimmed data-URLs (versioned to bust bad entries). */
-const CACHE_VER = "v3";
+const CACHE_VER = "v5";
 const trimmedCache = new Map<string, string>();
+
+function cacheKey(src: string, outSize: number): string {
+  // Many PNGs share the same data-URL prefix; sample head/mid/tail.
+  const midStart = Math.max(0, Math.floor(src.length / 2) - 24);
+  const head = src.slice(0, 48);
+  const mid = src.slice(midStart, midStart + 48);
+  const tail = src.slice(-48);
+  return `${CACHE_VER}:${outSize}:${src.length}:${head}:${mid}:${tail}`;
+}
 
 type Rgba = { r: number; g: number; b: number; a: number };
 
@@ -72,7 +81,7 @@ export async function fitIconDataUrl(
   src: string,
   outSize = 128,
 ): Promise<string> {
-  const key = `${CACHE_VER}:${outSize}:${src.slice(0, 96)}:${src.length}`;
+  const key = cacheKey(src, outSize);
   const cached = trimmedCache.get(key);
   if (cached) return cached;
 
@@ -215,6 +224,26 @@ export async function fitIconDataUrl(
   const result = out.toDataURL("image/png");
   trimmedCache.set(key, result);
   return result;
+}
+
+/** Square-crop user image for a custom tile avatar (no shell padding trim). */
+export async function prepareCustomAvatar(
+  src: string,
+  outSize = 192,
+): Promise<string> {
+  const img = await loadImage(src);
+  const canvas = document.createElement("canvas");
+  canvas.width = outSize;
+  canvas.height = outSize;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return src;
+  const scale = Math.max(outSize / img.width, outSize / img.height);
+  const dw = img.width * scale;
+  const dh = img.height * scale;
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = "high";
+  ctx.drawImage(img, (outSize - dw) / 2, (outSize - dh) / 2, dw, dh);
+  return canvas.toDataURL("image/png");
 }
 
 function loadImage(src: string): Promise<HTMLImageElement> {
