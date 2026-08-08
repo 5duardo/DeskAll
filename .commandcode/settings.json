@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Shell(dir:*)",
+      "Shell(del:*)",
+      "Shell(cargo:*)",
+      "Shell(npx tsc --noEmit 2>&1)",
+      "Shell(npx tsc --noEmit)",
+      "Shell(npm:*)",
+      "Shell(Select-String:*)",
+      "powershell"
+    ],
+    "deny": [],
+    "defaultMode": "default"
+  }
+}

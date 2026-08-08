@@ -7,7 +7,6 @@ import {
 } from "./icons";
 import type { ItemKind, ShortcutItem } from "../types";
 import { KIND_LABELS } from "../types";
-import { formatUsage } from "../lib/usage";
 import { FitIcon } from "./FitIcon";
 import { memo } from "react";
 
@@ -55,7 +54,6 @@ function ShortcutTileView({
   onContext,
   onMovePointerDown,
 }: Props) {
-  const usage = item.usageMs ?? 0;
   const isGroup = Boolean(item.isGroup);
 
   return (
@@ -153,7 +151,7 @@ function ShortcutTileView({
             ? dropTarget
               ? "Soltar aquí"
               : `Carpeta · ${childCount}`
-            : `${KIND_LABELS[item.kind]}${usage > 0 ? ` · ${formatUsage(usage)}` : ""}`}
+            : KIND_LABELS[item.kind]}
         </span>
       </span>
     </div>

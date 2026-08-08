@@ -1,16 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { isLaunchAtStartup, setLaunchAtStartup } from "../lib/tauri";
-
-const store = new LazyStore("deskall.json");
+import { isLaunchAtStartup, quitApp, setLaunchAtStartup } from "../lib/tauri";
+import { store } from "../lib/store";
 
 export interface WindowPrefs {
   /** Register DeskAll in Windows startup */
   launchAtStartup: boolean;
-  /** When launching at startup, start minimized to the taskbar */
+  /** When launching at startup, start minimized */
   startMinimized: boolean;
-  /** Close (X) minimizes to the taskbar instead of quitting */
+  /** Close (X) hides to the system tray instead of quitting */
   closeToMinimize: boolean;
 }
 
@@ -24,11 +22,6 @@ export function useWindowPrefs() {
   const [prefs, setPrefs] = useState<WindowPrefs>(DEFAULTS);
   const [ready, setReady] = useState(false);
   const allowQuitRef = useRef(false);
-  const closeToMinimizeRef = useRef(DEFAULTS.closeToMinimize);
-
-  useEffect(() => {
-    closeToMinimizeRef.current = prefs.closeToMinimize;
-  }, [prefs.closeToMinimize]);
 
   useEffect(() => {
     let cancelled = false;
@@ -66,18 +59,19 @@ export function useWindowPrefs() {
     let unlisten: (() => void) | undefined;
     void (async () => {
       unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
-        if (!closeToMinimizeRef.current || allowQuitRef.current) {
+        if (allowQuitRef.current) {
           allowQuitRef.current = false;
           return;
         }
+        if (!prefs.closeToMinimize) return;
         event.preventDefault();
-        await getCurrentWindow().minimize();
+          await getCurrentWindow().hide();
       });
     })();
     return () => {
       unlisten?.();
     };
-  }, [ready]);
+  }, [ready, prefs.closeToMinimize]);
 
   const update = useCallback(async (partial: Partial<WindowPrefs>) => {
     const next = await new Promise<WindowPrefs>((resolve) => {
@@ -99,7 +93,7 @@ export function useWindowPrefs() {
 
   const quit = useCallback(async () => {
     allowQuitRef.current = true;
-    await getCurrentWindow().close();
+    await quitApp();
   }, []);
 
   return { prefs, ready, update, quit };

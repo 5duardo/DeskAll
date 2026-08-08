@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import {
   readImage,
   readText,
@@ -16,8 +15,8 @@ import {
   clipboardImageToDataUrl,
   writeDataUrlToClipboard,
 } from "../lib/clipboardImage";
+import { store } from "../lib/store";
 
-const store = new LazyStore("deskall.json");
 const MAX_HISTORY = 80;
 const MAX_IMAGES = 24;
 

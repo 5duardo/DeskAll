@@ -4,6 +4,7 @@ import { open } from "@tauri-apps/plugin-dialog";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   AppWindow,
+  ArrowUpCircle,
   ChevronLeft,
   Clock3,
   ExternalLink,
@@ -12,6 +13,7 @@ import {
   Gamepad2,
   LayoutGrid,
   Link2,
+  LoaderCircle,
   Pencil,
   Plus,
   Search,
@@ -24,6 +26,8 @@ import {
   getPathInfo,
   launchItem,
   listInstalledApps,
+  openWithApp,
+  openWithDialog,
   revealItem,
   scanInstalledApps,
   type InstalledApp,
@@ -55,6 +59,20 @@ function kindForDeskTab(
   if (detected?.isDir) return "folder";
   if (detected?.kind === "url") return "url";
   return "file";
+}
+
+function sortByUsage(items: ShortcutItem[], runningIds: Set<string>) {
+  return [...items].sort((a, b) => {
+    const aRunning = runningIds.has(a.id) ? 1 : 0;
+    const bRunning = runningIds.has(b.id) ? 1 : 0;
+    if (aRunning !== bRunning) return bRunning - aRunning;
+
+    const aLastUsed = a.lastUsedAt ?? 0;
+    const bLastUsed = b.lastUsedAt ?? 0;
+    if (aLastUsed !== bLastUsed) return bLastUsed - aLastUsed;
+
+    return a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  });
 }
 
 interface Props {
@@ -91,6 +109,7 @@ interface Props {
   onRemove: (id: string) => Promise<void>;
   onReorder: (fromId: string, toId: string) => Promise<void>;
   onUsageStart: (id: string) => void;
+  onOpenDetail: (item: ShortcutItem) => void;
 }
 
 type ModalMode =
@@ -102,7 +121,8 @@ type ModalMode =
   | "rename"
   | "menu"
   | "preview"
-  | "move";
+  | "move"
+  | "openwith";
 
 function Section({
   title,
@@ -186,6 +206,7 @@ export function DesktopView({
   onRemove,
   onReorder,
   onUsageStart,
+  onOpenDetail,
 }: Props) {
   const [query, setQuery] = useState("");
   const [deskTab, setDeskTab] = useState<DeskTab>("apps");
@@ -212,6 +233,9 @@ export function DesktopView({
   const [installedQuery, setInstalledQuery] = useState("");
   const [installedLoading, setInstalledLoading] = useState(false);
   const [installedScanning, setInstalledScanning] = useState(false);
+  const [openWithApps, setOpenWithApps] = useState<InstalledApp[]>([]);
+  const [openWithLoading, setOpenWithLoading] = useState(false);
+  const [openWithQuery, setOpenWithQuery] = useState("");
   const [pickedPaths, setPickedPaths] = useState<Set<string>>(() => new Set());
   const scanGen = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -264,12 +288,20 @@ export function DesktopView({
     [filtered, deskTab],
   );
   const apps = useMemo(
-    () => filtered.filter((i) => !i.isGroup && i.kind === "app"),
-    [filtered],
+    () =>
+      sortByUsage(
+        filtered.filter((i) => !i.isGroup && i.kind === "app"),
+        runningIds,
+      ),
+    [filtered, runningIds],
   );
   const games = useMemo(
-    () => filtered.filter((i) => !i.isGroup && i.kind === "game"),
-    [filtered],
+    () =>
+      sortByUsage(
+        filtered.filter((i) => !i.isGroup && i.kind === "game"),
+        runningIds,
+      ),
+    [filtered, runningIds],
   );
   const favoriteGames = useMemo(
     () => games.filter((i) => i.favorite),
@@ -281,10 +313,13 @@ export function DesktopView({
   );
   const others = useMemo(
     () =>
-      filtered.filter(
-        (i) => !i.isGroup && i.kind !== "app" && i.kind !== "game",
+      sortByUsage(
+        filtered.filter(
+          (i) => !i.isGroup && i.kind !== "app" && i.kind !== "game",
+        ),
+        runningIds,
       ),
-    [filtered],
+    [filtered, runningIds],
   );
 
   const allGroups = useMemo(
@@ -788,7 +823,7 @@ export function DesktopView({
     clickTimer.current = window.setTimeout(() => {
       clickTimer.current = null;
       setSelectedId(id);
-      setModal("preview");
+      if (item) onOpenDetail(item);
     }, 210);
   }
 
@@ -975,6 +1010,7 @@ export function DesktopView({
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-1 pb-2">
           <FilesExplorer
             items={others}
+            runningIds={runningIds}
             query={query}
             selectedId={selectedId}
             launchingId={launchingId}
@@ -1316,6 +1352,17 @@ export function DesktopView({
                   <button
                     type="button"
                     className={btnGhost}
+                    onClick={() => {
+                      setModal(null);
+                      onOpenDetail(selected);
+                    }}
+                  >
+                    <ExternalLink className="size-4" strokeWidth={1.8} />
+                    Detalles
+                  </button>
+                  <button
+                    type="button"
+                    className={btnGhost}
                     onClick={() => void openEdit(selected)}
                   >
                     <Pencil className="size-4" strokeWidth={1.8} />
@@ -1375,6 +1422,7 @@ export function DesktopView({
               <CtxBtn onClick={() => void openEdit(selected)}>Editar</CtxBtn>
               {!selected.isGroup &&
                 selected.kind !== "game" &&
+                selected.kind !== "folder" &&
                 deskTab !== "games" && (
                 <CtxBtn onClick={() => setModal("move")}>
                   Mover a carpeta…
@@ -1397,7 +1445,7 @@ export function DesktopView({
                     : "Marcar como favorito"}
                 </CtxBtn>
               )}
-              {!selected.isGroup && selected.kind !== "app" && (
+              {!selected.isGroup && selected.kind === "game" && (
                 <CtxBtn
                   onClick={() => {
                     void onSetKind(selected.id, "app");
@@ -1409,7 +1457,7 @@ export function DesktopView({
                   Mover a Apps
                 </CtxBtn>
               )}
-              {!selected.isGroup && selected.kind !== "game" && (
+              {!selected.isGroup && selected.kind === "app" && (
                 <CtxBtn
                   onClick={() => {
                     void onSetKind(selected.id, "game");
@@ -1430,6 +1478,23 @@ export function DesktopView({
                   Mostrar en librería
                 </CtxBtn>
               )}
+              {!selected.isGroup && selected.kind === "folder" && (
+                <CtxBtn
+                  onClick={() => {
+                    setOpenWithLoading(true);
+                    setOpenWithQuery("");
+                    void openWithDialog(selected.path)
+                      .then((apps) => {
+                        setOpenWithApps(apps);
+                        setModal("openwith");
+                      })
+                      .catch((e) => flash(String(e)))
+                      .finally(() => setOpenWithLoading(false));
+                  }}
+                >
+                  Abrir con…
+                </CtxBtn>
+              )}
               <CtxBtn
                 danger
                 onClick={() => {
@@ -1442,6 +1507,112 @@ export function DesktopView({
               </CtxBtn>
             </div>
           </>,
+          document.body,
+        )}
+
+      {modal === "openwith" &&
+        selected &&
+        createPortal(
+          <div className="fixed inset-0 z-[100] grid place-items-center p-4">
+            <button
+              type="button"
+              className="absolute inset-0 border-0 bg-ink/30 backdrop-blur-[3px]"
+              aria-label="Cerrar"
+              onClick={() => setModal(null)}
+            />
+            <div
+              className="relative z-[101] flex max-h-[min(520px,calc(100vh-2rem))] w-[min(420px,calc(100vw-2rem))] flex-col animate-rise-fast rounded-[22px] border border-line bg-paper shadow-desk"
+              role="dialog"
+              aria-modal
+              aria-label={`Abrir ${selected.name} con`}
+            >
+              <div className="flex items-center justify-between gap-3 border-b border-line px-5 py-4">
+                <h3 className="m-0 font-display text-lg tracking-tight">
+                  Abrir «{selected.name}» con
+                </h3>
+                <button
+                  type="button"
+                  className="grid size-8 cursor-pointer place-items-center rounded-full border-0 bg-transparent text-muted hover:bg-accent-soft hover:text-ink"
+                  onClick={() => setModal(null)}
+                  aria-label="Cerrar"
+                >
+                  <X className="size-4" strokeWidth={1.8} />
+                </button>
+              </div>
+
+              <div className="border-b border-line px-4 py-2.5">
+                <div className="flex items-center gap-2 rounded-xl border border-line bg-surface px-3 py-2">
+                  <Search className="size-4 shrink-0 text-muted" />
+                  <input
+                    className="min-w-0 flex-1 border-0 bg-transparent text-sm text-ink outline-none placeholder:text-muted"
+                    placeholder="Buscar programa…"
+                    value={openWithQuery}
+                    onChange={(e) => setOpenWithQuery(e.target.value)}
+                    autoFocus
+                  />
+                </div>
+              </div>
+
+              <div className={`min-h-0 flex-1 overflow-auto p-1.5 ${hideScrollbar}`}>
+                {openWithLoading ? (
+                  <div className="grid place-items-center gap-2 py-12 text-center">
+                    <LoaderCircle className="size-6 animate-spin text-muted" />
+                    <p className="m-0 text-sm text-muted">Cargando programas…</p>
+                  </div>
+                ) : openWithApps.length === 0 ? (
+                  <div className="grid place-items-center gap-2 py-12 text-center">
+                    <AppWindow className="size-8 text-muted opacity-40" strokeWidth={1.5} />
+                    <p className="m-0 text-sm text-muted">No se encontraron programas</p>
+                  </div>
+                ) : (
+                  (() => {
+                    const q = openWithQuery.trim().toLowerCase();
+                    const filtered = q
+                      ? openWithApps.filter(
+                          (app) =>
+                            app.name.toLowerCase().includes(q) ||
+                            app.path.toLowerCase().includes(q),
+                        )
+                      : openWithApps;
+                    if (filtered.length === 0 && q) {
+                      return (
+                        <div className="grid place-items-center gap-2 py-12 text-center">
+                          <Search className="size-8 text-muted opacity-40" />
+                          <p className="m-0 text-sm text-muted">Sin resultados</p>
+                        </div>
+                      );
+                    }
+                    return filtered.map((app) => (
+                      <button
+                        key={app.path}
+                        type="button"
+                        onClick={() => {
+                          void openWithApp(app.path, selected.path)
+                            .then(() => {
+                              setModal(null);
+                              flash(`Abierto con ${app.name}`);
+                            })
+                            .catch((e) => flash(String(e)));
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-3 rounded-xl border-0 bg-transparent px-2.5 py-2.5 text-left hover:bg-accent-soft"
+                      >
+                        <ProgramIcon path={app.path} className="size-9" defer />
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-sm font-medium text-ink">
+                            {app.name}
+                          </div>
+                          <div className="truncate text-[11px] text-muted" title={app.path}>
+                            {app.path}
+                          </div>
+                        </div>
+                        <ArrowUpCircle className="size-4 shrink-0 text-muted opacity-50" />
+                      </button>
+                    ));
+                  })()
+                )}
+              </div>
+            </div>
+          </div>,
           document.body,
         )}
 

@@ -16,10 +16,10 @@ import {
 import { getVersion } from "@tauri-apps/api/app";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { openUrl } from "@tauri-apps/plugin-opener";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import type { ClipboardEntry, ShortcutItem, ThemeMode } from "../types";
 import type { WindowPrefs } from "../hooks/useWindowPrefs";
 import { btnDanger, btnGhost, btnPrimary } from "../lib/ui";
+import { store } from "../lib/store";
 import { backupFileName, buildBackup, parseBackup } from "../lib/backup";
 import { readTextFile, writeTextFile } from "../lib/tauri";
 import {
@@ -29,8 +29,6 @@ import {
   GITHUB_REPO_URL,
   type UpdateCheckResult,
 } from "../lib/updates";
-
-const store = new LazyStore("deskall.json");
 
 interface Props {
   theme: ThemeMode;
@@ -212,7 +210,7 @@ export function SettingsView({
       <div className="rounded-[18px] border border-line bg-surface p-5 shadow-desk">
         <h2 className="m-0 font-display text-lg tracking-tight">Ventana</h2>
         <p className="mt-1 text-sm text-muted">
-          Inicio con Windows y comportamiento en la barra de tareas.
+          Inicio con Windows y comportamiento de la ventana.
         </p>
         <div className="mt-4 flex flex-col gap-2">
           <ToggleRow
@@ -223,14 +221,14 @@ export function SettingsView({
           />
           <ToggleRow
             label="Abrir minimizada al iniciar"
-            hint="Al arrancar el PC, queda en la barra de tareas"
+            hint="Al arrancar el PC, queda minimizada"
             checked={windowPrefs.startMinimized}
             disabled={!windowPrefs.launchAtStartup}
             onChange={(v) => onWindowPrefsChange({ startMinimized: v })}
           />
           <ToggleRow
             label="Al cerrar, minimizar"
-            hint="La X deja DeskAll en la barra de tareas en lugar de salir"
+            hint="La X oculta DeskAll en la bandeja del sistema en lugar de salir"
             checked={windowPrefs.closeToMinimize}
             onChange={(v) => onWindowPrefsChange({ closeToMinimize: v })}
           />

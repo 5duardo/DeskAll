@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
+import { version } from "../package.json";
 import {
   Clipboard,
   Cpu,
   LayoutGrid,
   Settings,
 } from "./components/icons";
-import type { ViewMode } from "./types";
+import type { ShortcutItem, ViewMode } from "./types";
 import { useShortcuts } from "./hooks/useShortcuts";
 import { useClipboardHistory } from "./hooks/useClipboard";
 import { useTheme } from "./hooks/useTheme";
@@ -14,16 +15,36 @@ import { DesktopView } from "./components/DesktopView";
 import { ClipboardView } from "./components/ClipboardView";
 import { PcInfoView } from "./components/PcInfoView";
 import { SettingsView } from "./components/SettingsView";
+import { DetailPage } from "./components/DetailPage";
 import { BootLoader } from "./components/BootLoader";
 import { WindowControls } from "./components/WindowControls";
 import { CopyLoader } from "./components/CopyLoader";
 import { hideScrollbar } from "./lib/ui";
+import { runBootUpdate, type BootUpdateStatus } from "./lib/bootUpdate";
 
 const MIN_BOOT_MS = 700;
 
+function bootStatusMessage(status: BootUpdateStatus | null): string {
+  if (!status) return "Cargando…";
+  switch (status.phase) {
+    case "checking":
+      return "Buscando actualizaciones…";
+    case "downloading":
+      return `Descargando v${status.version ?? ""}…`;
+    case "installing":
+      return `Instalando v${status.version ?? ""}…`;
+    case "error":
+      return "Continuando sin actualizar";
+    default:
+      return "Cargando…";
+  }
+}
+
 function App() {
   const [view, setView] = useState<ViewMode>("desktop");
+  const [detailItem, setDetailItem] = useState<ShortcutItem | null>(null);
   const [bootDone, setBootDone] = useState(false);
+  const [bootStatus, setBootStatus] = useState<BootUpdateStatus | null>(null);
   const shortcuts = useShortcuts();
   const clipboard = useClipboardHistory();
   const { theme, setTheme, ready: themeReady } = useTheme();
@@ -34,18 +55,57 @@ function App() {
 
   useEffect(() => {
     if (!dataReady) return;
-    const t = window.setTimeout(() => setBootDone(true), MIN_BOOT_MS);
-    return () => window.clearTimeout(t);
+
+    let cancelled = false;
+    let timer: number | undefined;
+
+    void (async () => {
+      const start = Date.now();
+      const relaunching = await runBootUpdate((status) => {
+        if (!cancelled) setBootStatus(status);
+      });
+      if (relaunching || cancelled) return;
+
+      const elapsed = Date.now() - start;
+      const wait = Math.max(0, MIN_BOOT_MS - elapsed);
+      timer = window.setTimeout(() => {
+        if (!cancelled) setBootDone(true);
+      }, wait);
+    })();
+
+    return () => {
+      cancelled = true;
+      if (timer) window.clearTimeout(timer);
+    };
   }, [dataReady]);
 
   if (!bootDone) {
     return (
       <>
-        <BootLoader />
+        <BootLoader
+          status={bootStatusMessage(bootStatus)}
+          detail={
+            bootStatus?.phase === "error" ? bootStatus.message : undefined
+          }
+        />
         {shortcuts.copying && <CopyLoader label={shortcuts.copying} />}
       </>
     );
   }
+
+  function openDetail(item: ShortcutItem) {
+    setDetailItem(item);
+    setView("detail");
+  }
+
+  function closeDetail() {
+    setDetailItem(null);
+    setView("desktop");
+  }
+
+  const currentDetailItem = detailItem
+    ? shortcuts.items.find((item) => item.id === detailItem.id) ?? detailItem
+    : null;
 
   return (
     <div className="relative isolate grid h-full animate-rise grid-cols-1 grid-rows-[auto_auto_1fr] md:grid-cols-[240px_1fr] md:grid-rows-[auto_1fr]">
@@ -120,7 +180,7 @@ function App() {
 
         <footer className="mt-auto hidden p-3 text-xs leading-snug text-muted md:block">
           <p className="m-0">
-            Arrastra accesos del Escritorio · Historial de texto e imágenes
+            DeskAll v{version}
           </p>
         </footer>
       </aside>
@@ -147,6 +207,20 @@ function App() {
             onSetFavorite={shortcuts.setFavorite}
             onRemove={shortcuts.remove}
             onReorder={shortcuts.reorder}
+            onUsageStart={shortcuts.startUsageSession}
+            onOpenDetail={openDetail}
+          />
+        ) : view === "detail" && currentDetailItem ? (
+          <DetailPage
+            key={currentDetailItem.id}
+            item={currentDetailItem}
+            running={shortcuts.runningIds.includes(currentDetailItem.id)}
+            activeUsageId={shortcuts.activeUsageId}
+            activeSegmentStart={shortcuts.activeSegmentStart}
+            onBack={closeDetail}
+            onEdit={closeDetail}
+            onRemove={shortcuts.remove}
+            onFavorite={shortcuts.setFavorite}
             onUsageStart={shortcuts.startUsageSession}
           />
         ) : view === "clipboard" ? (

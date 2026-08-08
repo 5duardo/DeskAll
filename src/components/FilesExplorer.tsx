@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   FileText,
   Folder,
@@ -34,6 +34,7 @@ function kindLabel(item: ShortcutItem): string {
 
 interface Props {
   items: ShortcutItem[];
+  runningIds?: Set<string>;
   query?: string;
   selectedId: string | null;
   launchingId?: string | null;
@@ -43,8 +44,12 @@ interface Props {
   onAdd: () => void;
 }
 
+type SortKey = "name" | "kind" | "createdAt";
+type SortDirection = "asc" | "desc";
+
 export function FilesExplorer({
   items,
+  runningIds,
   query = "",
   selectedId,
   launchingId,
@@ -53,9 +58,45 @@ export function FilesExplorer({
   onContext,
   onAdd,
 }: Props) {
+  const [sortKey, setSortKey] = useState<SortKey | null>(null);
+  const [sortDirection, setSortDirection] = useState<SortDirection>("asc");
+
+  function changeSort(nextKey: SortKey) {
+    if (sortKey === nextKey) {
+      setSortDirection((current) => (current === "asc" ? "desc" : "asc"));
+    } else {
+      setSortKey(nextKey);
+      setSortDirection("asc");
+    }
+  }
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     const list = [...items].sort((a, b) => {
+      if (sortKey) {
+        let result = 0;
+        if (sortKey === "name") {
+          result = a.name.localeCompare(b.name, undefined, {
+            sensitivity: "base",
+          });
+        } else if (sortKey === "kind") {
+          result = kindLabel(a).localeCompare(kindLabel(b), undefined, {
+            sensitivity: "base",
+          });
+        } else {
+          result = a.createdAt - b.createdAt;
+        }
+        return sortDirection === "asc" ? result : -result;
+      }
+
+      const aRunning = runningIds?.has(a.id) ? 1 : 0;
+      const bRunning = runningIds?.has(b.id) ? 1 : 0;
+      if (aRunning !== bRunning) return bRunning - aRunning;
+
+      const aLastUsed = a.lastUsedAt ?? 0;
+      const bLastUsed = b.lastUsedAt ?? 0;
+      if (aLastUsed !== bLastUsed) return bLastUsed - aLastUsed;
+
       const aFolder = a.kind === "folder" ? 0 : 1;
       const bFolder = b.kind === "folder" ? 0 : 1;
       if (aFolder !== bFolder) return aFolder - bFolder;
@@ -68,7 +109,12 @@ export function FilesExplorer({
         i.path.toLowerCase().includes(q) ||
         i.kind.includes(q),
     );
-  }, [items, query]);
+  }, [items, query, runningIds, sortKey, sortDirection]);
+
+  function sortIndicator(key: SortKey) {
+    if (sortKey !== key) return "↕";
+    return sortDirection === "asc" ? "↑" : "↓";
+  }
 
   if (items.length === 0) {
     return (
@@ -89,10 +135,26 @@ export function FilesExplorer({
 
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-line bg-surface/60">
-      <div className="grid grid-cols-[minmax(0,1fr)_100px_160px] gap-2 border-b border-line px-3 py-2 text-[10px] font-semibold tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_110px_170px]">
-        <span>Nombre</span>
-        <span>Tipo</span>
-        <span className="text-right">Añadido</span>
+      <div className="grid grid-cols-[minmax(0,1fr)_100px_160px] gap-2 border-b border-line px-3 py-1 text-[10px] font-semibold tracking-wide text-muted uppercase sm:grid-cols-[minmax(0,1fr)_110px_170px]">
+        <SortButton
+          label="Nombre"
+          indicator={sortIndicator("name")}
+          active={sortKey === "name"}
+          onClick={() => changeSort("name")}
+        />
+        <SortButton
+          label="Tipo"
+          indicator={sortIndicator("kind")}
+          active={sortKey === "kind"}
+          onClick={() => changeSort("kind")}
+        />
+        <SortButton
+          label="Añadido"
+          indicator={sortIndicator("createdAt")}
+          active={sortKey === "createdAt"}
+          alignRight
+          onClick={() => changeSort("createdAt")}
+        />
       </div>
 
       <div className={`min-h-0 flex-1 overflow-auto p-1.5 ${hideScrollbar}`}>
@@ -114,7 +176,6 @@ export function FilesExplorer({
                     onDoubleClick={() => onOpen(item)}
                     onContextMenu={(e) => {
                       e.preventDefault();
-                      onSelect(item.id);
                       onContext(item, e);
                     }}
                     draggable={false}
@@ -181,5 +242,37 @@ export function FilesExplorer({
         <span>Doble clic para abrir · clic derecho para opciones</span>
       </footer>
     </div>
+  );
+}
+
+function SortButton({
+  label,
+  indicator,
+  active,
+  alignRight = false,
+  onClick,
+}: {
+  label: string;
+  indicator: string;
+  active: boolean;
+  alignRight?: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className={[
+        "flex cursor-pointer items-center gap-1 border-0 bg-transparent px-0 py-1 text-[10px] font-semibold tracking-wide transition hover:text-ink",
+        alignRight ? "justify-end text-right" : "text-left",
+        active ? "text-accent-deep" : "",
+      ].join(" ")}
+      onClick={onClick}
+      aria-label={`Ordenar por ${label}`}
+    >
+      <span>{label}</span>
+      <span className="text-[11px] leading-none" aria-hidden>
+        {indicator}
+      </span>
+    </button>
   );
 }

@@ -1,8 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import type { ThemeMode } from "../types";
-
-const store = new LazyStore("deskall.json");
+import { store } from "../lib/store";
 
 function resolveTheme(mode: ThemeMode): "light" | "dark" {
   if (mode === "system") {

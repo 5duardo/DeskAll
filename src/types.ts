@@ -64,7 +64,19 @@ export interface PathInfo {
   onDesktop: boolean;
 }
 
-export type ViewMode = "desktop" | "clipboard" | "pcinfo" | "settings";
+export interface FileDetails {
+  exists: boolean;
+  sizeBytes: number;
+  modifiedAt: number | null;
+  createdAt: number | null;
+  isDir: boolean;
+  isFile: boolean;
+  isSymlink: boolean;
+  extension: string | null;
+  parentDir: string;
+}
+
+export type ViewMode = "desktop" | "clipboard" | "pcinfo" | "settings" | "detail";
 
 export interface CpuInfo {
   brand: string;

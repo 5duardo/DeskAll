@@ -1,25 +1,12 @@
 import { invoke, Channel } from "@tauri-apps/api/core";
-import type { ClipboardKind, PathInfo, SystemInfo } from "../types";
+import type { ClipboardKind, FileDetails, PathInfo, SystemInfo } from "../types";
 
 export async function getPathInfo(path: string): Promise<PathInfo> {
   return invoke<PathInfo>("get_path_info", { path });
 }
 
-export async function getDesktopDir(): Promise<string> {
-  return invoke<string>("get_desktop_dir");
-}
-
-export async function isOnDesktop(path: string): Promise<boolean> {
-  return invoke<boolean>("is_on_desktop", { path });
-}
-
-export async function deleteDesktopItem(path: string): Promise<void> {
-  await invoke("delete_desktop_item", { path });
-}
-
-/** Copy a shortcut/file into DeskAll's library folder. Returns the new path. */
-export async function copyToLibrary(path: string): Promise<string> {
-  return invoke<string>("copy_to_library", { path });
+export async function getFileDetails(path: string): Promise<FileDetails> {
+  return invoke<FileDetails>("get_file_details", { path });
 }
 
 /** Copy into library; optionally delete the Desktop original afterward. */
@@ -33,39 +20,8 @@ export async function importToLibrary(
   });
 }
 
-/**
- * Copy from Desktop into library, then delete the Desktop original.
- * Returns the library path DeskAll should keep using.
- */
-export async function moveDesktopToLibrary(path: string): Promise<string> {
-  return invoke<string>("move_desktop_to_library", { path });
-}
-
 export async function getLibraryDir(): Promise<string> {
   return invoke<string>("get_library_dir");
-}
-
-export type DirEntryInfo = {
-  name: string;
-  path: string;
-  isDir: boolean;
-  size: number;
-  modifiedMs: number | null;
-  extension: string | null;
-};
-
-export type KnownFolder = {
-  id: string;
-  label: string;
-  path: string;
-};
-
-export async function listKnownFolders(): Promise<KnownFolder[]> {
-  return invoke<KnownFolder[]>("list_known_folders");
-}
-
-export async function listDirectory(path: string): Promise<DirEntryInfo[]> {
-  return invoke<DirEntryInfo[]>("list_directory", { path });
 }
 
 export interface InstalledApp {
@@ -106,6 +62,17 @@ export async function launchItem(target: string): Promise<void> {
   await invoke("launch_item", { target });
 }
 
+export async function openWithDialog(path: string): Promise<InstalledApp[]> {
+  return invoke<InstalledApp[]>("open_with_dialog", { path });
+}
+
+export async function openWithApp(
+  appPath: string,
+  targetPath: string,
+): Promise<void> {
+  await invoke("open_with_app", { appPath, targetPath });
+}
+
 /** Subset of paths whose resolved exe is currently running. */
 export async function whichAreRunning(paths: string[]): Promise<string[]> {
   if (paths.length === 0) return [];
@@ -114,11 +81,6 @@ export async function whichAreRunning(paths: string[]): Promise<string[]> {
 
 export async function revealItem(path: string): Promise<void> {
   await invoke("reveal_item", { path });
-}
-
-/** Absolute path to the JSON store that persists clipboard history. */
-export async function getClipboardStorePath(): Promise<string> {
-  return invoke<string>("get_clipboard_store_path");
 }
 
 export async function getClipboardKindDir(
@@ -226,6 +188,10 @@ export async function setLaunchAtStartup(
 
 export async function isLaunchAtStartup(): Promise<boolean> {
   return invoke<boolean>("is_launch_at_startup");
+}
+
+export async function quitApp(): Promise<void> {
+  await invoke("quit_app");
 }
 
 export function createId(): string {

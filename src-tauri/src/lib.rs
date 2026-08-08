@@ -9,6 +9,8 @@ mod game_covers;
 use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::menu::MenuBuilder;
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::Manager;
 
 #[derive(Debug, Serialize)]
@@ -21,6 +23,60 @@ pub struct PathInfo {
     pub extension: Option<String>,
     pub kind: String,
     pub on_desktop: bool,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileDetails {
+    pub exists: bool,
+    pub size_bytes: u64,
+    pub modified_at: Option<u64>,
+    pub created_at: Option<u64>,
+    pub is_dir: bool,
+    pub is_file: bool,
+    pub is_symlink: bool,
+    pub extension: Option<String>,
+    pub parent_dir: String,
+}
+
+#[tauri::command]
+fn get_file_details(path: String) -> FileDetails {
+    let p = Path::new(&path);
+    let metadata = std::fs::metadata(&path).ok();
+
+    let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
+    let modified = metadata
+        .as_ref()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+    let created = metadata
+        .as_ref()
+        .and_then(|m| m.created().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_secs());
+
+    let is_dir = p.is_dir();
+    let is_file = p.is_file();
+    let is_symlink = metadata.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
+
+    let extension = p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
+    let parent_dir = p
+        .parent()
+        .map(|d| d.to_string_lossy().into_owned())
+        .unwrap_or_default();
+
+    FileDetails {
+        exists: p.exists(),
+        size_bytes: size,
+        modified_at: modified,
+        created_at: created,
+        is_dir,
+        is_file,
+        is_symlink,
+        extension,
+        parent_dir,
+    }
 }
 
 fn desktop_dir() -> Result<PathBuf, String> {
@@ -140,18 +196,7 @@ fn list_file_icons(path: String) -> Vec<String> {
     icons::list_icon_data_urls(&path)
 }
 
-#[tauri::command]
-fn get_desktop_dir() -> Result<String, String> {
-    desktop_dir().map(|p| p.to_string_lossy().into_owned())
-}
-
-#[tauri::command]
-fn is_on_desktop(path: String) -> bool {
-    path_is_on_desktop(Path::new(&path))
-}
-
 /// Deletes a file/shortcut only if it lives on the OS Desktop.
-#[tauri::command]
 fn delete_desktop_item(path: String) -> Result<(), String> {
     let p = Path::new(&path);
     if !path_is_on_desktop(p) {
@@ -263,15 +308,6 @@ fn copy_path_to_library(app: &tauri::AppHandle, path: &str) -> Result<String, St
     Ok(dest.to_string_lossy().into_owned())
 }
 
-/// Copies a file, shortcut or folder into DeskAll's library.
-/// Runs off the UI thread to avoid freezing / crashing on large folders.
-#[tauri::command]
-async fn copy_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || copy_path_to_library(&app, &path))
-        .await
-        .map_err(|e| format!("Copia interrumpida: {e}"))?
-}
-
 /// Ensure path lives in library (copy if needed), then delete Desktop original if requested.
 /// Desktop folders are never deleted automatically (only files/shortcuts).
 #[tauri::command]
@@ -309,115 +345,8 @@ async fn import_to_library(
 }
 
 #[tauri::command]
-async fn move_desktop_to_library(app: tauri::AppHandle, path: String) -> Result<String, String> {
-    if !path_is_on_desktop(Path::new(&path)) {
-        return Err("Solo se puede mover desde el Escritorio del sistema".into());
-    }
-    import_to_library(app, path, true).await
-}
-
-#[tauri::command]
 fn get_library_dir(app: tauri::AppHandle) -> Result<String, String> {
     library_dir(&app).map(|p| p.to_string_lossy().into_owned())
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct DirEntryInfo {
-    name: String,
-    path: String,
-    is_dir: bool,
-    size: u64,
-    modified_ms: Option<u64>,
-    extension: Option<String>,
-}
-
-#[derive(Clone, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct KnownFolder {
-    id: String,
-    label: String,
-    path: String,
-}
-
-/// Quick-access folders for the Archivos explorer.
-#[tauri::command]
-fn list_known_folders(app: tauri::AppHandle) -> Vec<KnownFolder> {
-    let mut out = Vec::new();
-    let push = |out: &mut Vec<KnownFolder>, id: &str, label: &str, path: Option<PathBuf>| {
-        if let Some(p) = path {
-            if p.is_dir() {
-                out.push(KnownFolder {
-                    id: id.into(),
-                    label: label.into(),
-                    path: p.to_string_lossy().into_owned(),
-                });
-            }
-        }
-    };
-    push(&mut out, "home", "Inicio", dirs::home_dir());
-    push(&mut out, "desktop", "Escritorio", dirs::desktop_dir());
-    push(&mut out, "documents", "Documentos", dirs::document_dir());
-    push(&mut out, "downloads", "Descargas", dirs::download_dir());
-    push(&mut out, "pictures", "Imágenes", dirs::picture_dir());
-    push(&mut out, "music", "Música", dirs::audio_dir());
-    push(&mut out, "videos", "Vídeos", dirs::video_dir());
-    if let Ok(lib) = library_dir(&app) {
-        out.push(KnownFolder {
-            id: "library".into(),
-            label: "Librería DeskAll".into(),
-            path: lib.to_string_lossy().into_owned(),
-        });
-    }
-    out
-}
-
-/// List files and folders in a directory (explorer-style).
-#[tauri::command]
-fn list_directory(path: String) -> Result<Vec<DirEntryInfo>, String> {
-    let dir = Path::new(&path);
-    if !dir.is_dir() {
-        return Err("La ruta no es una carpeta".into());
-    }
-    let mut entries = Vec::new();
-    let rd = fs::read_dir(dir).map_err(|e| format!("No se pudo leer la carpeta: {e}"))?;
-    for entry in rd.flatten() {
-        let p = entry.path();
-        let name = entry.file_name().to_string_lossy().into_owned();
-        // Skip hidden / system noise on Windows
-        if name.starts_with('.') || name.eq_ignore_ascii_case("desktop.ini") {
-            continue;
-        }
-        let meta = entry.metadata().ok();
-        let is_dir = meta.as_ref().map(|m| m.is_dir()).unwrap_or(p.is_dir());
-        let size = meta.as_ref().map(|m| m.len()).unwrap_or(0);
-        let modified_ms = meta
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64);
-        let extension = if is_dir {
-            None
-        } else {
-            p.extension()
-                .and_then(|e| e.to_str())
-                .map(|e| e.to_lowercase())
-        };
-        entries.push(DirEntryInfo {
-            name,
-            path: p.to_string_lossy().into_owned(),
-            is_dir,
-            size,
-            modified_ms,
-            extension,
-        });
-    }
-    entries.sort_by(|a, b| match (a.is_dir, b.is_dir) {
-        (true, false) => std::cmp::Ordering::Less,
-        (false, true) => std::cmp::Ordering::Greater,
-        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-    });
-    Ok(entries)
 }
 
 fn open_with_shell(target: &str) -> Result<(), String> {
@@ -492,12 +421,33 @@ fn launch_item(target: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn get_clipboard_store_path(app: tauri::AppHandle) -> Result<String, String> {
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| format!("No se pudo resolver app data: {e}"))?;
-    Ok(dir.join("deskall.json").to_string_lossy().into_owned())
+fn open_with_dialog(path: String) -> Result<Vec<installed::InstalledApp>, String> {
+    let p = Path::new(&path);
+    if !p.exists() {
+        return Err("La ruta ya no existe".into());
+    }
+    Ok(installed::suggested_apps_for_path(&path))
+}
+
+#[tauri::command]
+fn open_with_app(app_path: String, target_path: String) -> Result<(), String> {
+    #[cfg(windows)]
+    {
+        std::process::Command::new(&app_path)
+            .arg(&target_path)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    {
+        std::process::Command::new(&app_path)
+            .arg(&target_path)
+            .spawn()
+            .map_err(|e| format!("No se pudo abrir: {e}"))?;
+        Ok(())
+    }
 }
 
 fn clipboard_root(app: &tauri::AppHandle) -> Result<PathBuf, String> {
@@ -702,6 +652,11 @@ fn is_launch_at_startup() -> Result<bool, String> {
     }
 }
 
+#[tauri::command]
+fn quit_app(app: tauri::AppHandle) {
+    app.exit(0);
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let start_minimized = std::env::args().any(|a| a == "--minimized");
@@ -712,7 +667,42 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .setup(move |app| {
+            let show = tauri::menu::MenuItem::with_id(app, "show", "Abrir DeskAll", true, None::<&str>)?;
+            let quit = tauri::menu::MenuItem::with_id(app, "quit", "Salir de DeskAll", true, None::<&str>)?;
+            let menu = MenuBuilder::new(app).items(&[&show, &quit]).build()?;
+
+            TrayIconBuilder::new()
+                .menu(&menu)
+                .tooltip("DeskAll")
+                .on_menu_event(|app, event| match event.id().as_ref() {
+                    "show" => {
+                        if let Some(win) = app.get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                    "quit" => app.exit(0),
+                    _ => {}
+                })
+                .on_tray_icon_event(|tray, event| {
+                    if let TrayIconEvent::Click {
+                        button: MouseButton::Left,
+                        button_state: MouseButtonState::Up,
+                        ..
+                    } = event
+                    {
+                        if let Some(win) = tray.app_handle().get_webview_window("main") {
+                            let _ = win.show();
+                            let _ = win.set_focus();
+                        }
+                    }
+                })
+                .icon(app.default_window_icon().cloned().expect("missing app icon"))
+                .build(app)?;
+
             if let Some(win) = app.get_webview_window("main") {
                 if start_minimized {
                     let _ = win.minimize();
@@ -724,34 +714,30 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             get_path_info,
+            get_file_details,
             extract_file_icon,
             list_file_icons,
-            get_desktop_dir,
-            is_on_desktop,
-            delete_desktop_item,
-            copy_to_library,
-            move_desktop_to_library,
             import_to_library,
             get_library_dir,
-            list_known_folders,
-            list_directory,
             list_installed_apps,
             scan_installed_apps,
             write_text_file,
             read_text_file,
             launch_item,
+            open_with_dialog,
+            open_with_app,
             which_are_running,
             get_system_info,
             search_game_covers,
             fetch_remote_image_png,
             reveal_item,
-            get_clipboard_store_path,
             get_clipboard_kind_dir,
             save_clipboard_text,
             save_clipboard_image,
             delete_clipboard_file,
             set_launch_at_startup,
-            is_launch_at_startup
+            is_launch_at_startup,
+            quit_app
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

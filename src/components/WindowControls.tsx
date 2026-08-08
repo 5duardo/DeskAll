@@ -4,7 +4,7 @@ import { Minus, Square, X } from "./icons";
 const win = () => getCurrentWindow();
 
 interface Props {
-  /** When true, the close button minimizes to the taskbar */
+  /** When true, the close button hides the window in the system tray */
   closeToMinimize?: boolean;
   /** Force quit (bypasses close-to-minimize) */
   onQuit?: () => void;
@@ -32,14 +32,14 @@ export function WindowControls({ closeToMinimize = false, onQuit }: Props) {
       <CtrlBtn
         title={
           closeToMinimize
-            ? "Minimizar a la barra de tareas (Mayús+clic para salir)"
+            ? "Cerrar (Mayús+clic para minimizar)"
             : "Cerrar"
         }
         danger
         onClick={(e) => {
           void (async () => {
             if (closeToMinimize && !e.shiftKey) {
-              await win().minimize();
+              await win().hide();
               return;
             }
             if (onQuit) onQuit();

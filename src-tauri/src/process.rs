@@ -168,6 +168,28 @@ fn looks_like_game_via_launcher(args: &str) -> bool {
         || args.contains("rungameid")
 }
 
+/// Some Windows shortcuts launch a bootstrapper (for example Discord's
+/// Update.exe) and name the real process in `--processStart <name>.exe`.
+fn process_start_name(args: &str) -> Option<String> {
+    let lower = args.to_lowercase();
+    let value = lower
+        .split_once("--processstart=")
+        .map(|(_, value)| value.split_whitespace().next().unwrap_or(""))
+        .or_else(|| {
+            let mut parts = lower.split_whitespace();
+            while let Some(part) = parts.next() {
+                if part == "--processstart" {
+                    return parts.next();
+                }
+            }
+            None
+        })?;
+
+    let value = value.trim_matches('"');
+    let name = Path::new(value).file_name()?.to_str()?.to_string();
+    name.ends_with(".exe").then_some(name)
+}
+
 /// Returns the subset of `paths` whose resolved executable is currently running.
 pub fn which_are_running(paths: Vec<String>) -> Vec<String> {
     let (running_paths, running_names) = collect_running_exes();
@@ -188,6 +210,12 @@ pub fn which_are_running(paths: Vec<String>) -> Vec<String> {
             let Some(name) = file_name_lower(&norm) else {
                 return false;
             };
+
+            if let Some(started_name) = process_start_name(&args) {
+                if running_names.contains(&started_name) {
+                    return true;
+                }
+            }
 
             // Game shortcuts that only point at Steam/Epic/etc. with launch args —
             // we cannot know the real game process from the .lnk alone.

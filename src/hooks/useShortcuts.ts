@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { LazyStore } from "@tauri-apps/plugin-store";
 import type { DeskTabId, ItemKind, ShortcutItem } from "../types";
 import { ACCENT_COLORS } from "../types";
 import {
@@ -11,8 +10,7 @@ import {
   whichAreRunning,
 } from "../lib/tauri";
 import { fitIconDataUrl, prepareCustomAvatar } from "../lib/fitIcon";
-
-const store = new LazyStore("deskall.json");
+import { store } from "../lib/store";
 
 async function extractFittedIcon(path: string): Promise<string | null> {
   try {
