@@ -61,6 +61,7 @@ export function useShortcuts() {
     null,
   );
   const sessionRef = useRef<ActiveSession | null>(null);
+  const backgroundSessionsRef = useRef<Map<string, number>>(new Map());
   const itemsRef = useRef<ShortcutItem[]>([]);
   /** Grace window after launch before process must be visible */
   const launchGraceRef = useRef<Map<string, number>>(new Map());
@@ -113,13 +114,37 @@ export function useShortcuts() {
     flushSession(true);
   }, [flushSession]);
 
+  const flushBackgroundSessions = useCallback(() => {
+    const sessions = backgroundSessionsRef.current;
+    if (!sessions.size) return;
+    const now = Date.now();
+    let changed = false;
+    const next = itemsRef.current.map((item) => {
+      const startedAt = sessions.get(item.id);
+      if (!startedAt) return item;
+      const delta = Math.max(0, now - startedAt);
+      if (delta < 500) return item;
+      sessions.set(item.id, now);
+      changed = true;
+      return { ...item, usageMs: (item.usageMs ?? 0) + delta };
+    });
+    if (!changed) return;
+    itemsRef.current = next;
+    setItems(next);
+    void store.set("shortcuts", next).then(() => store.save());
+  }, []);
+
   const startUsageSession = useCallback(
-    (id: string) => {
+    (id: string, countLaunch = true) => {
       if (sessionRef.current?.id === id) {
         // Already tracking this one — keep going
         return;
       }
       flushSession(true);
+      if (backgroundSessionsRef.current.has(id)) {
+        flushBackgroundSessions();
+        backgroundSessionsRef.current.delete(id);
+      }
       const now = Date.now();
       sessionRef.current = { id, segmentStart: now };
       setActiveUsageId(id);
@@ -131,7 +156,9 @@ export function useShortcuts() {
         i.id === id
           ? {
               ...i,
-              launchCount: (i.launchCount ?? 0) + 1,
+              launchCount: countLaunch
+                ? (i.launchCount ?? 0) + 1
+                : i.launchCount,
               lastUsedAt: now,
             }
           : i,
@@ -140,7 +167,7 @@ export function useShortcuts() {
       setItems(next);
       void store.set("shortcuts", next).then(() => store.save());
     },
-    [flushSession],
+    [flushBackgroundSessions, flushSession],
   );
 
   // Periodic flush while a session is active
@@ -150,6 +177,14 @@ export function useShortcuts() {
     return () => window.clearInterval(id);
   }, [activeUsageId, flushSession]);
 
+  useEffect(() => {
+    const id = window.setInterval(flushBackgroundSessions, 15_000);
+    return () => {
+      window.clearInterval(id);
+      flushBackgroundSessions();
+    };
+  }, [flushBackgroundSessions]);
+
   // Poll OS processes to mark open apps / games
   useEffect(() => {
     let cancelled = false;
@@ -157,7 +192,7 @@ export function useShortcuts() {
     let inFlight = false;
 
     const poll = async () => {
-      if (inFlight || document.hidden) return;
+      if (inFlight) return;
       inFlight = true;
       const list = itemsRef.current.filter(isLaunchable);
       const pathToIds = new Map<string, string[]>();
@@ -204,6 +239,35 @@ export function useShortcuts() {
         return nextIds;
       });
 
+      // Also track apps opened outside DeskAll (for example at Windows startup).
+      // The first detected app becomes the active usage session.
+      if (!sessionRef.current && nextIds.length > 0) {
+        startUsageSession(nextIds[0], false);
+      }
+      const activeId = sessionRef.current?.id;
+      const backgroundStartedIds: string[] = [];
+      for (const id of nextIds) {
+        if (id !== activeId && !backgroundSessionsRef.current.has(id)) {
+          backgroundSessionsRef.current.set(id, now);
+          backgroundStartedIds.push(id);
+        }
+      }
+      if (backgroundStartedIds.length) {
+        const started = new Set(backgroundStartedIds);
+        const next = itemsRef.current.map((item) =>
+          started.has(item.id) ? { ...item, lastUsedAt: now } : item,
+        );
+        itemsRef.current = next;
+        setItems(next);
+        void store.set("shortcuts", next).then(() => store.save());
+      }
+      for (const id of [...backgroundSessionsRef.current.keys()]) {
+        if (!detected.has(id)) {
+          flushBackgroundSessions();
+          backgroundSessionsRef.current.delete(id);
+        }
+      }
+
       // End usage session when that process is no longer running
       const session = sessionRef.current;
       if (session && !detected.has(session.id)) {
@@ -228,7 +292,11 @@ export function useShortcuts() {
       window.removeEventListener("beforeunload", onUnload);
       endUsageSession();
     };
-  }, [endUsageSession]);
+  }, [
+    endUsageSession,
+    flushBackgroundSessions,
+    startUsageSession,
+  ]);
 
   useEffect(() => {
     let cancelled = false;
@@ -267,6 +335,15 @@ export function useShortcuts() {
           continue;
         }
         if (libraryDir && inLibrary(item.path, libraryDir)) {
+          if (
+            (item.kind === "app" || item.kind === "game") &&
+            !item.missing
+          ) {
+            next = next.map((i) =>
+              i.id === item.id ? { ...i, missing: true } : i,
+            );
+            changed = true;
+          }
           if (item.onDesktop) {
             next = next.map((i) =>
               i.id === item.id ? { ...i, onDesktop: false } : i,
@@ -277,7 +354,24 @@ export function useShortcuts() {
         }
         try {
           const info = await getPathInfo(item.path);
-          if (!info.exists) continue;
+          if (!info.exists) {
+            if (
+              (item.kind === "app" || item.kind === "game") &&
+              !item.missing
+            ) {
+              next = next.map((i) =>
+                i.id === item.id ? { ...i, missing: true } : i,
+              );
+              changed = true;
+            }
+            continue;
+          }
+          if (item.missing) {
+            next = next.map((i) =>
+              i.id === item.id ? { ...i, missing: false } : i,
+            );
+            changed = true;
+          }
           setCopying(
             info.isDir
               ? `Copiando carpeta «${info.name}»…`
@@ -374,7 +468,11 @@ export function useShortcuts() {
 
       let finalPath = path;
       const shouldCopy =
-        info.exists && !isHttpUrl(path) && kind !== "url";
+        info.exists &&
+        !isHttpUrl(path) &&
+        kind !== "url" &&
+        kind !== "app" &&
+        kind !== "game";
 
       if (shouldCopy) {
         const label = info.isDir
@@ -443,6 +541,7 @@ export function useShortcuts() {
         createdAt: Date.now(),
         onDesktop: false,
         iconDataUrl,
+        missing: (kind === "app" || kind === "game") && !info.exists,
         usageMs: 0,
         launchCount: 0,
         parentId: parentId ?? null,

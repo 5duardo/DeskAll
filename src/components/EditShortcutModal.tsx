@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import {
   AppWindow,
+  Globe,
   Gamepad2,
   LoaderCircle,
   Search,
@@ -326,10 +327,10 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
               <div className="flex gap-1 rounded-xl border border-line bg-surface/80 p-1">
                 {(
                   [
-                    { id: "file" as const, label: "Del archivo" },
-                    { id: "online" as const, label: "Online" },
+                    { id: "file" as const, label: "Del archivo", icon: Upload },
+                    { id: "online" as const, label: "Online", icon: Globe },
                   ] as const
-                ).map(({ id, label }) => (
+                ).map(({ id, label, icon: TabIcon }) => (
                   <button
                     key={id}
                     type="button"
@@ -341,6 +342,7 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
                         : "bg-transparent text-muted hover:text-ink",
                     ].join(" ")}
                   >
+                    <TabIcon className="mr-1.5 inline-block size-3.5 align-[-0.15em]" />
                     {label}
                   </button>
                 ))}

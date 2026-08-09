@@ -22,6 +22,8 @@ export interface ShortcutItem {
   launchCount?: number;
   /** Last launch timestamp */
   lastUsedAt?: number;
+  /** True when an app/game path is no longer available on disk */
+  missing?: boolean;
   /**
    * DeskAll category folder (not an OS path).
    * Children point here via parentId.

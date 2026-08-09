@@ -6,7 +6,6 @@ import {
   Globe,
 } from "./icons";
 import type { ItemKind, ShortcutItem } from "../types";
-import { KIND_LABELS } from "../types";
 import { FitIcon } from "./FitIcon";
 import { memo } from "react";
 
@@ -55,6 +54,8 @@ function ShortcutTileView({
   onMovePointerDown,
 }: Props) {
   const isGroup = Boolean(item.isGroup);
+  const isMissing =
+    !isGroup && item.missing && (item.kind === "app" || item.kind === "game");
 
   return (
     <div
@@ -63,7 +64,7 @@ function ShortcutTileView({
       data-deskall-id={item.id}
       data-deskall-drop={isGroup ? "folder" : "item"}
       className={[
-        "group relative flex cursor-pointer flex-col items-center gap-2 rounded-2xl border px-2 pt-3 pb-2.5 text-inherit transition duration-200 select-none",
+        "group relative flex cursor-pointer flex-col items-center gap-1 rounded-2xl border px-2 pt-2.5 pb-2 text-inherit transition duration-200 select-none",
         "hover:-translate-y-0.5 hover:bg-surface/60",
         selected
           ? "tile-selected border-transparent bg-surface/80"
@@ -73,6 +74,7 @@ function ShortcutTileView({
           : "",
         dragging ? "pointer-events-none opacity-35" : "",
         launching ? "tile-launching pointer-events-none" : "",
+        isMissing ? "grayscale opacity-60" : "",
       ].join(" ")}
       onPointerDown={(e) => {
         if (e.button !== 0 || isGroup) return;
@@ -95,7 +97,9 @@ function ShortcutTileView({
       title={
         isGroup
           ? `${item.name}\nClic: abrir carpeta · Suelta apps aquí`
-          : `${item.name}\nClic: detalles · Arrastra a una carpeta`
+          : `${item.name}\n${
+              isMissing ? "No instalado · " : ""
+            }Clic: detalles · Arrastra a una carpeta`
       }
     >
       {selected && (
@@ -146,13 +150,11 @@ function ShortcutTileView({
         >
           {item.name}
         </span>
-        <span className="text-xs text-muted">
-          {isGroup
-            ? dropTarget
-              ? "Soltar aquí"
-              : `Carpeta · ${childCount}`
-            : KIND_LABELS[item.kind]}
-        </span>
+        {isGroup && (
+          <span className="text-xs text-muted">
+            {dropTarget ? "Soltar aquí" : `Carpeta · ${childCount}`}
+          </span>
+        )}
       </span>
     </div>
   );

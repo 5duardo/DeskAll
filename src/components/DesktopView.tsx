@@ -39,7 +39,6 @@ import { GameBanner } from "./GameBanner";
 import { ProgramIcon } from "./ProgramIcon";
 import { FitIcon } from "./FitIcon";
 import { EditShortcutModal } from "./EditShortcutModal";
-import { FilesExplorer } from "./FilesExplorer";
 
 type DeskTab = DeskTabId;
 
@@ -166,7 +165,7 @@ function Section({
         </span>
       </header>
       <div
-        className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(132px,1fr))] content-start gap-3.5"
+        className="grid auto-rows-min grid-cols-[repeat(auto-fill,minmax(120px,1fr))] content-start gap-2"
         role="list"
       >
         {items.map((item) => (
@@ -341,9 +340,9 @@ export function DesktopView({
   }, [items]);
 
   const tabItems = useMemo(() => {
-    if (deskTab === "apps") return [...groups, ...apps];
+    if (deskTab === "apps") return [...groups, ...apps, ...others];
     if (deskTab === "games") return games;
-    return others;
+    return [];
   }, [deskTab, groups, apps, games, others]);
 
   const selected = items.find((i) => i.id === selectedId) ?? null;
@@ -385,8 +384,6 @@ export function DesktopView({
         const where =
           deskTab === "games"
             ? "Juegos"
-            : deskTab === "files"
-              ? "Archivos"
               : "Apps";
         flash(`${added} añadido(s) en ${where}`);
       }
@@ -887,9 +884,7 @@ export function DesktopView({
           <p className="font-display text-lg text-accent-deep">
             {deskTab === "games"
               ? "Suelta aquí para añadir a Juegos"
-              : deskTab === "files"
-                ? "Suelta aquí para añadir a Archivos"
-                : "Suelta aquí para añadir a Apps"}
+              : "Suelta aquí para añadir a Apps"}
           </p>
         </div>
       )}
@@ -928,9 +923,7 @@ export function DesktopView({
                 placeholder={
                   deskTab === "games"
                     ? "Buscar juegos…"
-                    : deskTab === "files"
-                      ? "Buscar archivos de DeskAll…"
-                      : "Buscar apps…"
+                    : "Buscar apps…"
                 }
                 aria-label="Buscar"
               />
@@ -963,12 +956,6 @@ export function DesktopView({
                   count: games.length as number | undefined,
                   icon: Gamepad2,
                 },
-                {
-                  id: "files" as const,
-                  label: "Archivos",
-                  count: others.length as number | undefined,
-                  icon: FolderOpen,
-                },
               ]
             ).map(({ id, label, count, icon: Icon }) => {
               const active = deskTab === id;
@@ -979,8 +966,8 @@ export function DesktopView({
                   className={[
                     "flex flex-1 cursor-pointer items-center justify-center gap-2 rounded-xl border-0 px-3 py-2.5 text-sm font-medium transition",
                     active
-                      ? "bg-paper text-ink shadow-sm"
-                      : "bg-transparent text-muted hover:text-ink",
+                      ? "bg-accent-soft text-accent-deep shadow-sm"
+                      : "bg-paper/70 text-muted hover:bg-paper hover:text-ink",
                   ].join(" ")}
                   onClick={() => setDeskTab(id)}
                   aria-pressed={active}
@@ -1006,21 +993,7 @@ export function DesktopView({
         )}
       </header>
 
-      {deskTab === "files" && !currentFolder ? (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-1 pb-2">
-          <FilesExplorer
-            items={others}
-            runningIds={runningIds}
-            query={query}
-            selectedId={selectedId}
-            launchingId={launchingId}
-            onSelect={handleTileClick}
-            onOpen={handleTileOpen}
-            onContext={openContext}
-            onAdd={openAddModal}
-          />
-        </div>
-      ) : tabItems.length === 0 ? (
+      {tabItems.length === 0 ? (
         <div className="grid flex-1 animate-rise place-content-center justify-items-center gap-2 p-8 text-center">
           {currentFolder ? (
             <>
@@ -1052,12 +1025,12 @@ export function DesktopView({
           ) : (
             <>
               <h2 className="m-0 font-display text-[1.45rem] tracking-tight">
-                {deskTab === "games" ? "Sin juegos aún" : "Sin apps aún"}
+                {deskTab === "games" ? "Sin juegos aún" : "Sin elementos aún"}
               </h2>
               <p className="mb-2 max-w-md text-ink-soft leading-relaxed">
                 {deskTab === "games"
                   ? "Arrastra juegos aquí o usa Añadir — se guardan como Juego."
-                  : "Arrastra accesos aquí o usa Añadir — se guardan como App."}
+                  : "Arrastra accesos o archivos aquí o usa Añadir."}
               </p>
               <button type="button" className={btnPrimary} onClick={openAddModal}>
                 <Plus className="size-4" strokeWidth={1.8} />
