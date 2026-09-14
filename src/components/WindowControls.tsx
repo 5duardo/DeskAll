@@ -32,7 +32,7 @@ export function WindowControls({ closeToMinimize = false, onQuit }: Props) {
       <CtrlBtn
         title={
           closeToMinimize
-            ? "Cerrar (Mayús+clic para minimizar)"
+            ? "Cerrar (Mayús+clic para salir del todo)"
             : "Cerrar"
         }
         danger

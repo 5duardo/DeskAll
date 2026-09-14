@@ -44,7 +44,7 @@ export interface ClipboardEntry {
   kind: ClipboardKind;
   /** Plain text for text entries */
   text?: string;
-  /** PNG data URL for image entries */
+  /** PNG thumbnail data URL for image entries (full-res file lives in filePath) */
   imageDataUrl?: string;
   width?: number;
   height?: number;

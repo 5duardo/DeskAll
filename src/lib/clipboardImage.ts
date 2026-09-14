@@ -1,7 +1,7 @@
 import { Image } from "@tauri-apps/api/image";
 import { writeImage } from "@tauri-apps/plugin-clipboard-manager";
 
-const MAX_EDGE = 480;
+const THUMB_EDGE = 480;
 
 function fingerprintRgba(rgba: Uint8Array, width: number, height: number): string {
   let acc = 0;
@@ -10,23 +10,22 @@ function fingerprintRgba(rgba: Uint8Array, width: number, height: number): strin
   return `img:${width}x${height}:${rgba.length}:${acc}`;
 }
 
-/** Convert clipboard Image (RGBA) to a PNG data URL, downscaling if huge. */
+/**
+ * Convert clipboard Image (RGBA) to PNG data URLs: full resolution for the
+ * saved file and a small thumbnail for the history UI.
+ */
 export async function clipboardImageToDataUrl(image: Image): Promise<{
   dataUrl: string;
+  thumbDataUrl: string;
   width: number;
   height: number;
   fingerprint: string;
 }> {
   const rgba = await image.rgba();
   const size = await image.size();
-  let width = size.width;
-  let height = size.height;
+  const width = size.width;
+  const height = size.height;
   const fingerprint = fingerprintRgba(rgba, width, height);
-
-  const canvas = document.createElement("canvas");
-  const scale = Math.min(1, MAX_EDGE / Math.max(width, height));
-  const outW = Math.max(1, Math.round(width * scale));
-  const outH = Math.max(1, Math.round(height * scale));
 
   const src = document.createElement("canvas");
   src.width = width;
@@ -40,17 +39,31 @@ export async function clipboardImageToDataUrl(image: Image): Promise<{
   const imageData = new ImageData(pixels.slice(0, width * height * 4), width, height);
   sctx.putImageData(imageData, 0, 0);
 
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) throw new Error("Canvas no disponible");
-  ctx.imageSmoothingEnabled = true;
-  ctx.drawImage(src, 0, 0, outW, outH);
+  const scale = Math.min(1, THUMB_EDGE / Math.max(width, height));
+  const outW = Math.max(1, Math.round(width * scale));
+  const outH = Math.max(1, Math.round(height * scale));
+  const thumb = document.createElement("canvas");
+  thumb.width = outW;
+  thumb.height = outH;
+  const tctx = thumb.getContext("2d");
+  if (!tctx) throw new Error("Canvas no disponible");
+  tctx.imageSmoothingEnabled = true;
+  tctx.drawImage(src, 0, 0, outW, outH);
+
+  const thumbDataUrl = thumb.toDataURL("image/png");
+  let dataUrl = thumbDataUrl;
+  try {
+    const full = src.toDataURL("image/png");
+    if (full.startsWith("data:image/png")) dataUrl = full;
+  } catch {
+    /* keep the thumbnail if the full-size PNG cannot be encoded */
+  }
 
   return {
-    dataUrl: canvas.toDataURL("image/png"),
-    width: outW,
-    height: outH,
+    dataUrl,
+    thumbDataUrl,
+    width,
+    height,
     fingerprint,
   };
 }
@@ -73,4 +86,10 @@ export async function writeDataUrlToClipboard(dataUrl: string): Promise<void> {
   const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height);
   const tauriImage = await Image.new(data, canvas.width, canvas.height);
   await writeImage(tauriImage);
+}
+
+/** Put the full-resolution image file back on the system clipboard. */
+export async function writeImageFileToClipboard(path: string): Promise<void> {
+  const image = await Image.fromPath(path);
+  await writeImage(image);
 }

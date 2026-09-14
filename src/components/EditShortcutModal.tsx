@@ -56,6 +56,7 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
   const [suggestLoading, setSuggestLoading] = useState(false);
   const [picking, setPicking] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const customUrls = useRef<Set<string>>(new Set());
 
@@ -115,21 +116,25 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
 
   async function onUpload(file: File | undefined) {
     if (!file || !file.type.startsWith("image/")) return;
-    const reader = new FileReader();
-    const raw = await new Promise<string>((resolve, reject) => {
-      reader.onload = () => resolve(String(reader.result));
-      reader.onerror = () => reject(new Error("read failed"));
-      reader.readAsDataURL(file);
-    });
-    const prepared = await prepareCustomAvatar(raw, 192);
-    customUrls.current.add(prepared);
-    setIcon(prepared);
-    setIconCustom(true);
-    setIconAvatar(true);
-    setFileIcons((prev) =>
-      prev.includes(prepared) ? prev : [prepared, ...prev],
-    );
-    setIconTab("file");
+    try {
+      const reader = new FileReader();
+      const raw = await new Promise<string>((resolve, reject) => {
+        reader.onload = () => resolve(String(reader.result));
+        reader.onerror = () => reject(new Error("No se pudo leer la imagen"));
+        reader.readAsDataURL(file);
+      });
+      const prepared = await prepareCustomAvatar(raw, 192);
+      customUrls.current.add(prepared);
+      setIcon(prepared);
+      setIconCustom(true);
+      setIconAvatar(true);
+      setFileIcons((prev) =>
+        prev.includes(prepared) ? prev : [prepared, ...prev],
+      );
+      setIconTab("file");
+    } catch (err) {
+      setError(String(err));
+    }
   }
 
   async function pickOnline(sug: IconSuggestion) {
@@ -156,6 +161,7 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
     const clean = name.trim();
     if (!clean || saving || busy) return;
     setSaving(true);
+    setError(null);
     try {
       await onSave({
         name: clean,
@@ -164,6 +170,8 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
         iconCustom,
         iconAvatar,
       });
+    } catch (err) {
+      setError(String(err));
     } finally {
       setSaving(false);
     }
@@ -409,6 +417,9 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
                       className={`${fieldInput} pl-10`}
                       value={query}
                       onChange={(e) => setQuery(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter") e.preventDefault();
+                      }}
                       placeholder={
                         kind === "game"
                           ? "Buscar juego (CS2, Elden Ring…)"
@@ -480,6 +491,14 @@ export function EditShortcutModal({ item, busy, onClose, onSave }: Props) {
 
         {/* Footer */}
         <div className="flex flex-wrap items-center justify-end gap-2 border-t border-line bg-surface/50 px-5 py-3.5">
+          {error && (
+            <p
+              className="m-0 mr-auto min-w-0 max-w-full truncate text-xs text-danger"
+              title={error}
+            >
+              {error}
+            </p>
+          )}
           <button
             type="button"
             className={btnGhost}

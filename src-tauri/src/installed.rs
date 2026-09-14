@@ -67,7 +67,7 @@ fn walk_shortcuts(dir: &Path, map: &mut BTreeMap<String, InstalledApp>, depth: u
             .and_then(|e| e.to_str())
             .unwrap_or("")
             .to_lowercase();
-        if ext != "lnk" && ext != "url" && ext != "exe" {
+        if ext != "lnk" && ext != "url" && ext != "exe" && ext != "desktop" {
             continue;
         }
         let name = path

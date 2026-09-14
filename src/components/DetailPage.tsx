@@ -86,11 +86,21 @@ export function DetailPage({
   onUsageStart,
 }: Props) {
   const [details, setDetails] = useState<FileDetails | null>(null);
+  const [launchError, setLaunchError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!item.isGroup && !item.path.startsWith("http")) {
-      void getFileDetails(item.path).then(setDetails);
-    }
+    if (item.isGroup || item.path.startsWith("http")) return;
+    let cancelled = false;
+    void getFileDetails(item.path)
+      .then((next) => {
+        if (!cancelled) setDetails(next);
+      })
+      .catch(() => {
+        /* details are optional */
+      });
+    return () => {
+      cancelled = true;
+    };
   }, [item.path, item.isGroup]);
 
   const isActive = activeUsageId === item.id;
@@ -161,7 +171,10 @@ export function DetailPage({
             className={btnPrimary}
             onClick={() => {
               onUsageStart(item.id);
-              void launchItem(item.path);
+              setLaunchError(null);
+              void launchItem(item.path).catch((err) =>
+                setLaunchError(String(err)),
+              );
             }}
           >
             <ExternalLink className="size-4" />
@@ -210,6 +223,12 @@ export function DetailPage({
           {item.isGroup ? "Eliminar carpeta" : "Quitar de DeskAll"}
         </button>
       </div>
+
+      {launchError && (
+        <p className="mb-4 rounded-xl border border-danger/30 bg-danger/10 px-3.5 py-2.5 text-sm text-danger">
+          {launchError}
+        </p>
+      )}
 
       {/* Stats grid */}
       <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">

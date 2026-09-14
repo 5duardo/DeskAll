@@ -413,8 +413,7 @@ export function useShortcuts() {
 
       // Icon extraction is intentionally after ready: it must not block startup.
       void (async () => {
-        let withIcons = [...next];
-        const pending = withIcons.filter(
+        const pending = next.filter(
           (item) =>
             !item.isGroup &&
             !item.path.startsWith("deskall://") &&
@@ -429,14 +428,24 @@ export function useShortcuts() {
             if (!item) return;
             try {
               const icon = await extractFittedIcon(item.path);
-              if (!icon || icon === item.iconDataUrl || cancelled) continue;
-              withIcons = withIcons.map((current) =>
-                current.id === item.id
-                  ? { ...current, iconDataUrl: icon, iconCustom: false }
-                  : current,
+              if (!icon || cancelled) continue;
+              const current = itemsRef.current;
+              const existing = current.find((i) => i.id === item.id);
+              if (
+                !existing ||
+                existing.iconCustom ||
+                icon === existing.iconDataUrl
+              ) {
+                continue;
+              }
+              const updated = current.map((i) =>
+                i.id === item.id
+                  ? { ...i, iconDataUrl: icon, iconCustom: false }
+                  : i,
               );
+              itemsRef.current = updated;
+              setItems(updated);
               iconChanged = true;
-              setItems([...withIcons]);
             } catch {
               /* ignore */
             }
@@ -445,7 +454,7 @@ export function useShortcuts() {
 
         await Promise.all([worker(), worker(), worker()]);
         if (!cancelled && iconChanged) {
-          await store.set("shortcuts", withIcons);
+          await store.set("shortcuts", itemsRef.current);
           await store.save();
         }
       })();
@@ -464,7 +473,6 @@ export function useShortcuts() {
     ) => {
       const info = await getPathInfo(path);
       const kind = (forcedKind ?? (info.kind as ItemKind)) || "file";
-      const items = itemsRef.current;
 
       let finalPath = path;
       const shouldCopy =
@@ -489,7 +497,7 @@ export function useShortcuts() {
         }
       }
 
-      const existing = items.find(
+      const existing = itemsRef.current.find(
         (i) =>
           i.path.toLowerCase() === finalPath.toLowerCase() ||
           i.path.toLowerCase() === path.toLowerCase(),
@@ -511,17 +519,29 @@ export function useShortcuts() {
             pathChanged && !existing.iconCustom
               ? ((await extractFittedIcon(finalPath)) ?? existing.iconDataUrl)
               : existing.iconDataUrl;
+          const parentValue =
+            parentId !== undefined ? parentId : (existing.parentId ?? null);
           const updated: ShortcutItem = {
             ...existing,
             path: finalPath,
             onDesktop: false,
             iconDataUrl,
             kind: nextKind,
-            parentId:
-              parentId !== undefined ? parentId : (existing.parentId ?? null),
+            parentId: parentValue,
           };
           await persist(
-            items.map((i) => (i.id === existing.id ? updated : i)),
+            itemsRef.current.map((i) =>
+              i.id === existing.id
+                ? {
+                    ...i,
+                    path: finalPath,
+                    onDesktop: false,
+                    iconDataUrl,
+                    kind: nextKind,
+                    parentId: parentValue,
+                  }
+                : i,
+            ),
           );
           return updated;
         }
@@ -537,7 +557,7 @@ export function useShortcuts() {
         kind: ["app", "game", "folder", "file", "url"].includes(kind)
           ? kind
           : "file",
-        color: ACCENT_COLORS[items.length % ACCENT_COLORS.length],
+        color: ACCENT_COLORS[itemsRef.current.length % ACCENT_COLORS.length],
         createdAt: Date.now(),
         onDesktop: false,
         iconDataUrl,
@@ -546,7 +566,7 @@ export function useShortcuts() {
         launchCount: 0,
         parentId: parentId ?? null,
       };
-      await persist([...items, item]);
+      await persist([...itemsRef.current, item]);
       return item;
     },
     [persist],
@@ -648,7 +668,6 @@ export function useShortcuts() {
               custom: Boolean(options.custom),
               avatar: Boolean(options.avatar),
             };
-      const items = itemsRef.current;
       let fitted = iconDataUrl;
       if (fitted) {
         try {
@@ -660,7 +679,7 @@ export function useShortcuts() {
         }
       }
       await persist(
-        items.map((i) =>
+        itemsRef.current.map((i) =>
           i.id === id
             ? {
                 ...i,

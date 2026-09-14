@@ -57,18 +57,22 @@ export function useWindowPrefs() {
   useEffect(() => {
     if (!ready) return;
     let unlisten: (() => void) | undefined;
+    let cancelled = false;
     void (async () => {
-      unlisten = await getCurrentWindow().onCloseRequested(async (event) => {
+      const stop = await getCurrentWindow().onCloseRequested(async (event) => {
         if (allowQuitRef.current) {
           allowQuitRef.current = false;
           return;
         }
         if (!prefs.closeToMinimize) return;
         event.preventDefault();
-          await getCurrentWindow().hide();
+        await getCurrentWindow().hide();
       });
+      if (cancelled) stop();
+      else unlisten = stop;
     })();
     return () => {
+      cancelled = true;
       unlisten?.();
     };
   }, [ready, prefs.closeToMinimize]);

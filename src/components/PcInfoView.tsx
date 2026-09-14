@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Cpu,
   HardDrive,
@@ -93,19 +93,24 @@ export function PcInfoView() {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const requestRef = useRef(0);
 
   const load = useCallback(async (quiet = false) => {
+    const request = ++requestRef.current;
     if (!quiet) setLoading(true);
     else setRefreshing(true);
     try {
       const next = await getSystemInfo();
+      if (request !== requestRef.current) return;
       setInfo(next);
       setError(null);
     } catch (err) {
-      setError(String(err));
+      if (request === requestRef.current) setError(String(err));
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === requestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }, []);
 

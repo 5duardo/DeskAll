@@ -306,9 +306,10 @@ fn extract_via_shell_item(path: &str, size: i32) -> Option<Vec<u8>> {
             )
             .ok()?;
 
-        let rgba = hbitmap_to_rgba(hbmp)?;
+        let rgba = hbitmap_to_rgba(hbmp);
         let _ = DeleteObject(hbmp.into());
-        finalize_rgba(rgba.0, rgba.1, rgba.2)
+        let (pixels, width, height) = rgba?;
+        finalize_rgba(pixels, width, height)
     }
 }
 

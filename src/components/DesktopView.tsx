@@ -109,6 +109,9 @@ interface Props {
   onReorder: (fromId: string, toId: string) => Promise<void>;
   onUsageStart: (id: string) => void;
   onOpenDetail: (item: ShortcutItem) => void;
+  /** Item id whose edit modal should open on arrival (from the detail view) */
+  editItemId?: string | null;
+  onEditOpened?: () => void;
 }
 
 type ModalMode =
@@ -206,6 +209,8 @@ export function DesktopView({
   onReorder,
   onUsageStart,
   onOpenDetail,
+  editItemId = null,
+  onEditOpened,
 }: Props) {
   const [query, setQuery] = useState("");
   const [deskTab, setDeskTab] = useState<DeskTab>("apps");
@@ -239,6 +244,9 @@ export function DesktopView({
   const scanGen = useRef(0);
   const menuRef = useRef<HTMLDivElement>(null);
   const clickTimer = useRef<number | null>(null);
+  const clickPendingId = useRef<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const launchingRef = useRef(false);
   const pendingMove = useRef<{
     id: string;
     x: number;
@@ -265,6 +273,26 @@ export function DesktopView({
       setFolderId(null);
     }
   }, [folderId, items, deskTab]);
+
+  // Open the editor when arriving from the detail view
+  useEffect(() => {
+    if (!editItemId) return;
+    const item = itemsRef.current.find((i) => i.id === editItemId);
+    if (item) {
+      setSelectedId(item.id);
+      setModal("rename");
+    }
+    onEditOpened?.();
+  }, [editItemId, onEditOpened]);
+
+  // Clear pending timers when the view unmounts
+  useEffect(
+    () => () => {
+      if (clickTimer.current) window.clearTimeout(clickTimer.current);
+      if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    },
+    [],
+  );
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -404,7 +432,11 @@ export function DesktopView({
       .replace(/Launcher[\s\S]*$/i, "No se pudo abrir (revisa la ruta)")
       .trim();
     setToast(clean.length > 140 ? `${clean.slice(0, 140)}…` : clean);
-    window.setTimeout(() => setToast(null), 2800);
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => {
+      toastTimer.current = null;
+      setToast(null);
+    }, 2800);
   }
 
   async function pickFiles() {
@@ -428,6 +460,8 @@ export function DesktopView({
       }
       if (paths.length) flash("Guardado en librería interna");
       setModal(null);
+    } catch (err) {
+      flash(String(err));
     } finally {
       setBusy(false);
     }
@@ -446,6 +480,8 @@ export function DesktopView({
         flash("Carpeta añadida");
         setModal(null);
       }
+    } catch (err) {
+      flash(String(err));
     } finally {
       setBusy(false);
     }
@@ -571,20 +607,28 @@ export function DesktopView({
     const url = /^https?:\/\//i.test(draftUrl)
       ? draftUrl.trim()
       : `https://${draftUrl.trim()}`;
-    await onAddUrl(url, draftName || undefined, folderId);
-    setDraftUrl("");
-    setDraftName("");
-    setModal(null);
-    flash("URL añadida");
+    try {
+      await onAddUrl(url, draftName || undefined, folderId);
+      setDraftUrl("");
+      setDraftName("");
+      setModal(null);
+      flash("URL añadida");
+    } catch (err) {
+      flash(String(err));
+    }
   }
 
   async function submitFolder(e: React.FormEvent) {
     e.preventDefault();
     const name = draftName.trim() || "Nueva carpeta";
-    await onAddGroup(name, folderId, deskTab === "games" ? "apps" : deskTab);
-    setDraftName("");
-    setModal(null);
-    flash(`Carpeta «${name}» creada`);
+    try {
+      await onAddGroup(name, folderId, deskTab === "games" ? "apps" : deskTab);
+      setDraftName("");
+      setModal(null);
+      flash(`Carpeta «${name}» creada`);
+    } catch (err) {
+      flash(String(err));
+    }
   }
 
   async function openEdit(item: ShortcutItem) {
@@ -775,7 +819,7 @@ export function DesktopView({
   }, [onMoveToFolder, onReorder]);
 
   async function openSelected(item = selected) {
-    if (!item || launchingId) return;
+    if (!item || launchingRef.current) return;
     if (item.isGroup) {
       setModal(null);
       setFolderId(item.id);
@@ -783,6 +827,7 @@ export function DesktopView({
       return;
     }
     setModal(null);
+    launchingRef.current = true;
     setLaunchingId(item.id);
     setSelectedId(item.id);
     onUsageStart(item.id);
@@ -792,7 +837,10 @@ export function DesktopView({
       } catch (err) {
         flash(String(err));
       } finally {
-        window.setTimeout(() => setLaunchingId(null), 120);
+        window.setTimeout(() => {
+          launchingRef.current = false;
+          setLaunchingId(null);
+        }, 120);
       }
     }, 380);
   }
@@ -806,6 +854,7 @@ export function DesktopView({
         window.clearTimeout(clickTimer.current);
         clickTimer.current = null;
       }
+      clickPendingId.current = null;
       setFolderId(item.id);
       setSelectedId(null);
       setModal(null);
@@ -815,10 +864,16 @@ export function DesktopView({
     if (clickTimer.current) {
       window.clearTimeout(clickTimer.current);
       clickTimer.current = null;
-      return;
+      // Second click on the same tile is the double-click: let onDoubleClick open it
+      if (clickPendingId.current === id) {
+        clickPendingId.current = null;
+        return;
+      }
     }
+    clickPendingId.current = id;
     clickTimer.current = window.setTimeout(() => {
       clickTimer.current = null;
+      clickPendingId.current = null;
       setSelectedId(id);
       if (item) onOpenDetail(item);
     }, 210);
@@ -829,6 +884,7 @@ export function DesktopView({
       window.clearTimeout(clickTimer.current);
       clickTimer.current = null;
     }
+    clickPendingId.current = null;
     void openSelected(item);
   }
 

@@ -5,6 +5,7 @@ use ureq::Agent;
 
 const WIKI_API: &str = "https://en.wikipedia.org/w/api.php";
 const UA: &str = "DeskAll/0.1 (desktop launcher; icon search)";
+const MAX_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -224,13 +225,14 @@ pub fn fetch_image_png_data_url(url: &str, size: u32) -> Result<String, String> 
     let mut bytes = Vec::new();
     res.body_mut()
         .as_reader()
+        .take(MAX_IMAGE_BYTES)
         .read_to_end(&mut bytes)
         .map_err(|e| e.to_string())?;
 
     let img = image::load_from_memory(&bytes).map_err(|e| e.to_string())?;
     let rgba = img.into_rgba8();
     let (w, h) = (rgba.width(), rgba.height());
-    let edge = size.max(64);
+    let edge = size.clamp(64, 1024);
 
     let scale = (edge as f32 / w as f32).max(edge as f32 / h as f32);
     let nw = (w as f32 * scale).round().max(1.0) as u32;

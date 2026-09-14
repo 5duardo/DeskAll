@@ -39,9 +39,10 @@ pub struct FileDetails {
     pub parent_dir: String,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_file_details(path: String) -> FileDetails {
     let p = Path::new(&path);
+    let link_metadata = std::fs::symlink_metadata(&path).ok();
     let metadata = std::fs::metadata(&path).ok();
 
     let size = metadata.as_ref().map(|m| m.len()).unwrap_or(0);
@@ -58,7 +59,10 @@ fn get_file_details(path: String) -> FileDetails {
 
     let is_dir = p.is_dir();
     let is_file = p.is_file();
-    let is_symlink = metadata.as_ref().map(|m| m.file_type().is_symlink()).unwrap_or(false);
+    let is_symlink = link_metadata
+        .as_ref()
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false);
 
     let extension = p.extension().and_then(|e| e.to_str()).map(|e| e.to_lowercase());
     let parent_dir = p
@@ -151,7 +155,7 @@ fn detect_kind(path: &Path, is_dir: bool) -> String {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_path_info(path: String) -> PathInfo {
     let p = Path::new(&path);
     let exists = p.exists();
@@ -186,12 +190,12 @@ fn get_path_info(path: String) -> PathInfo {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn extract_file_icon(path: String) -> Option<String> {
     icons::extract_icon_data_url(&path)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_file_icons(path: String) -> Vec<String> {
     icons::list_icon_data_urls(&path)
 }
@@ -243,7 +247,13 @@ fn unique_library_dest(dir: &Path, src: &Path) -> PathBuf {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis())
         .unwrap_or(0);
-    dir.join(format!("{stem}-{stamp}{ext}"))
+    let mut candidate = dir.join(format!("{stem}-{stamp}{ext}"));
+    let mut counter = 1;
+    while candidate.exists() {
+        candidate = dir.join(format!("{stem}-{stamp}-{counter}{ext}"));
+        counter += 1;
+    }
+    candidate
 }
 
 fn copy_dir_recursive(src: &Path, dest: &Path) -> Result<(), String> {
@@ -317,15 +327,18 @@ async fn import_to_library(
     delete_desktop_original: bool,
 ) -> Result<String, String> {
     let src_path = path.clone();
-    let on_desk = path_is_on_desktop(Path::new(&path));
-    let is_dir = Path::new(&path).is_dir();
 
-    let library_path = {
+    let (library_path, on_desk, is_dir) = {
         let app2 = app.clone();
         let path2 = path.clone();
-        tauri::async_runtime::spawn_blocking(move || copy_path_to_library(&app2, &path2))
-            .await
-            .map_err(|e| format!("Copia interrumpida: {e}"))??
+        tauri::async_runtime::spawn_blocking(move || {
+            let on_desk = path_is_on_desktop(Path::new(&path2));
+            let is_dir = Path::new(&path2).is_dir();
+            let library_path = copy_path_to_library(&app2, &path2)?;
+            Ok::<_, String>((library_path, on_desk, is_dir))
+        })
+        .await
+        .map_err(|e| format!("Copia interrumpida: {e}"))??
     };
 
     if delete_desktop_original && on_desk && !is_dir {
@@ -393,9 +406,10 @@ fn open_with_shell(target: &str) -> Result<(), String> {
             return Ok(());
         }
 
-        // Fallback: cmd start (handles .lnk / associations)
-        let status = std::process::Command::new("cmd")
-            .args(["/C", "start", "", target])
+        // Fallback: hand the file to the shell so it resolves the association
+        // (explorer avoids cmd.exe metacharacter injection from file names)
+        let status = std::process::Command::new("explorer")
+            .arg(target)
             .spawn()
             .map_err(|e| format!("No se pudo abrir: {e}"))?;
         let _ = status;
@@ -474,8 +488,20 @@ fn get_clipboard_kind_dir(app: tauri::AppHandle, kind: String) -> Result<String,
     clipboard_kind_dir(&app, &kind).map(|p| p.to_string_lossy().into_owned())
 }
 
+fn safe_clipboard_id(id: &str) -> Result<&str, String> {
+    if id.is_empty()
+        || !id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+    {
+        return Err("Identificador de portapapeles inválido".into());
+    }
+    Ok(id)
+}
+
 #[tauri::command]
 fn save_clipboard_text(app: tauri::AppHandle, id: String, text: String) -> Result<String, String> {
+    let id = safe_clipboard_id(&id)?;
     let dir = clipboard_kind_dir(&app, "text")?;
     let path = dir.join(format!("{id}.txt"));
     fs::write(&path, text.as_bytes()).map_err(|e| format!("No se pudo guardar texto: {e}"))?;
@@ -489,6 +515,7 @@ fn save_clipboard_image(
     data_url: String,
 ) -> Result<String, String> {
     use base64::Engine;
+    let id = safe_clipboard_id(&id)?;
     let b64 = data_url
         .strip_prefix("data:image/png;base64,")
         .or_else(|| data_url.strip_prefix("data:image/jpeg;base64,"))
@@ -511,12 +538,22 @@ fn save_clipboard_image(
 }
 
 #[tauri::command]
-fn delete_clipboard_file(path: String) -> Result<(), String> {
+fn delete_clipboard_file(app: tauri::AppHandle, path: String) -> Result<(), String> {
     let p = Path::new(&path);
-    if p.is_file() {
-        fs::remove_file(p).map_err(|e| format!("No se pudo borrar: {e}"))?;
+    if !p.is_file() {
+        return Ok(());
     }
-    Ok(())
+    let root = clipboard_root(&app)?;
+    let root_canon = root
+        .canonicalize()
+        .map_err(|e| format!("No se pudo borrar: {e}"))?;
+    let target = p
+        .canonicalize()
+        .map_err(|e| format!("No se pudo borrar: {e}"))?;
+    if !target.starts_with(&root_canon) {
+        return Err("La ruta no pertenece al portapapeles".into());
+    }
+    fs::remove_file(&target).map_err(|e| format!("No se pudo borrar: {e}"))
 }
 
 #[tauri::command]
@@ -600,31 +637,43 @@ fn scan_installed_apps(on_event: tauri::ipc::Channel<InstalledScanEvent>) {
 }
 
 /// Returns which of the given shortcut paths currently have a running process.
-#[tauri::command]
+#[tauri::command(async)]
 fn which_are_running(paths: Vec<String>) -> Vec<String> {
     process::which_are_running(paths)
 }
 
 /// Snapshot of hostname, OS, CPU, RAM and disks.
-#[tauri::command]
+#[tauri::command(async)]
 fn get_system_info() -> system_info::SystemInfo {
     system_info::collect()
 }
 
 /// Wikipedia cover art for games/apps (works for Epic-only titles like Rocket League).
 #[tauri::command]
-fn search_game_covers(query: String, limit: Option<u32>, prefer_game: Option<bool>) -> Vec<game_covers::GameCover> {
-    game_covers::search_covers(
-        &query,
-        limit.unwrap_or(12) as usize,
-        prefer_game.unwrap_or(true),
-    )
+async fn search_game_covers(
+    query: String,
+    limit: Option<u32>,
+    prefer_game: Option<bool>,
+) -> Vec<game_covers::GameCover> {
+    tauri::async_runtime::spawn_blocking(move || {
+        game_covers::search_covers(
+            &query,
+            limit.unwrap_or(12) as usize,
+            prefer_game.unwrap_or(true),
+        )
+    })
+    .await
+    .unwrap_or_default()
 }
 
 /// Download a remote image as a square PNG data URL (avoids browser CORS).
 #[tauri::command]
-fn fetch_remote_image_png(url: String, size: Option<u32>) -> Result<String, String> {
-    game_covers::fetch_image_png_data_url(&url, size.unwrap_or(192))
+async fn fetch_remote_image_png(url: String, size: Option<u32>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        game_covers::fetch_image_png_data_url(&url, size.unwrap_or(192))
+    })
+    .await
+    .map_err(|e| format!("Descarga interrumpida: {e}"))?
 }
 
 #[tauri::command]

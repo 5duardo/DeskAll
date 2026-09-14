@@ -43,6 +43,7 @@ function bootStatusMessage(status: BootUpdateStatus | null): string {
 function App() {
   const [view, setView] = useState<ViewMode>("desktop");
   const [detailItem, setDetailItem] = useState<ShortcutItem | null>(null);
+  const [editItemId, setEditItemId] = useState<string | null>(null);
   const [bootDone, setBootDone] = useState(false);
   const [bootStatus, setBootStatus] = useState<BootUpdateStatus | null>(null);
   const shortcuts = useShortcuts();
@@ -101,6 +102,11 @@ function App() {
   function closeDetail() {
     setDetailItem(null);
     setView("desktop");
+  }
+
+  function beginEdit(item: ShortcutItem) {
+    setEditItemId(item.id);
+    closeDetail();
   }
 
   const currentDetailItem = detailItem
@@ -209,6 +215,8 @@ function App() {
             onReorder={shortcuts.reorder}
             onUsageStart={shortcuts.startUsageSession}
             onOpenDetail={openDetail}
+            editItemId={editItemId}
+            onEditOpened={() => setEditItemId(null)}
           />
         ) : view === "detail" && currentDetailItem ? (
           <DetailPage
@@ -218,7 +226,7 @@ function App() {
             activeUsageId={shortcuts.activeUsageId}
             activeSegmentStart={shortcuts.activeSegmentStart}
             onBack={closeDetail}
-            onEdit={closeDetail}
+            onEdit={beginEdit}
             onRemove={shortcuts.remove}
             onFavorite={shortcuts.setFavorite}
             onUsageStart={shortcuts.startUsageSession}

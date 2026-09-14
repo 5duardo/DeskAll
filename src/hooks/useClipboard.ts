@@ -14,21 +14,16 @@ import {
 import {
   clipboardImageToDataUrl,
   writeDataUrlToClipboard,
+  writeImageFileToClipboard,
 } from "../lib/clipboardImage";
 import { store } from "../lib/store";
 
-const MAX_HISTORY = 80;
-const MAX_IMAGES = 24;
-
 function mergeHistory(next: ClipboardEntry[]): ClipboardEntry[] {
   const pinned = next.filter((e) => e.pinned);
-  const unpinned = next.filter((e) => !e.pinned);
-  const images = unpinned.filter((e) => e.kind === "image").slice(0, MAX_IMAGES);
-  const texts = unpinned.filter((e) => e.kind === "text");
-  const rest = [...images, ...texts]
-    .sort((a, b) => b.createdAt - a.createdAt)
-    .slice(0, MAX_HISTORY);
-  return [...pinned, ...rest.filter((e) => !pinned.some((p) => p.id === e.id))];
+  const rest = next
+    .filter((e) => !e.pinned)
+    .sort((a, b) => b.createdAt - a.createdAt);
+  return [...pinned, ...rest];
 }
 
 function bumpOrInsert(
@@ -105,6 +100,7 @@ export function useClipboardHistory() {
         };
       });
       if (!cancelled) {
+        entriesRef.current = normalized;
         setEntries(normalized);
         setReady(true);
       }
@@ -115,6 +111,7 @@ export function useClipboardHistory() {
   }, []);
 
   const persist = useCallback(async (next: ClipboardEntry[]) => {
+    entriesRef.current = next;
     setEntries(next);
     await store.set("clipboard", next);
     await store.save();
@@ -126,12 +123,11 @@ export function useClipboardHistory() {
         prev: ClipboardEntry[],
       ) => { next: ClipboardEntry[]; dropped: ClipboardEntry[] },
     ) => {
-      setEntries((prev) => {
-        const { next, dropped } = builder(prev);
-        if (dropped.length) void purgeFiles(dropped);
-        void store.set("clipboard", next).then(() => store.save());
-        return next;
-      });
+      const { next, dropped } = builder(entriesRef.current);
+      entriesRef.current = next;
+      setEntries(next);
+      if (dropped.length) void purgeFiles(dropped);
+      void store.set("clipboard", next).then(() => store.save());
     },
     [],
   );
@@ -218,7 +214,7 @@ export function useClipboardHistory() {
           pushEntry((prev) =>
             bumpOrInsert(prev, {
               kind: "image",
-              imageDataUrl: converted.dataUrl,
+              imageDataUrl: converted.thumbDataUrl,
               width: converted.width,
               height: converted.height,
               fingerprint: converted.fingerprint,
@@ -239,7 +235,7 @@ export function useClipboardHistory() {
           bumpOrInsert(prev, {
             id,
             kind: "image",
-            imageDataUrl: converted.dataUrl,
+            imageDataUrl: converted.thumbDataUrl,
             width: converted.width,
             height: converted.height,
             fingerprint: converted.fingerprint,
@@ -262,8 +258,17 @@ export function useClipboardHistory() {
   }, [watching, ready, pushEntry]);
 
   const copyEntry = useCallback(async (entry: ClipboardEntry) => {
-    if (entry.kind === "image" && entry.imageDataUrl) {
+    if (entry.kind === "image") {
       lastImageFp.current = entry.fingerprint;
+      if (entry.filePath) {
+        try {
+          await writeImageFileToClipboard(entry.filePath);
+          return;
+        } catch {
+          /* fall back to the stored thumbnail */
+        }
+      }
+      if (!entry.imageDataUrl) throw new Error("Entrada sin imagen");
       await writeDataUrlToClipboard(entry.imageDataUrl);
       return;
     }
